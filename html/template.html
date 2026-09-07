@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#2563EB">
+<title>png伪装工具</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Microsoft YaHei', sans-serif;
+    background: linear-gradient(135deg, #2563EB 0%, #7C3AED 100%);
+    min-height: 100vh; color: #222; padding: 20px 12px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  .card {
+    background: rgba(255,255,255,0.98); border-radius: 24px;
+    padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 0 0 14px; flex-wrap: wrap; gap: 8px; }
+  header h1 {
+    font-size: 1.9rem; font-weight: 700; letter-spacing: 1px;
+    background: linear-gradient(135deg, #2563EB 0%, #7C3AED 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    display: flex; align-items: center; gap: 10px;
+  }
+  header h1 .logo { height: 1.5em; width: auto; border-radius: 8px; -webkit-text-fill-color: initial; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+  .desc {
+    color: #666; font-size: 0.92rem; line-height: 1.8; margin-bottom: 14px;
+    background: #f8f9fb; border-radius: 10px; border-left: 4px solid #2563EB; padding: 10px 14px;
+  }
+  .desc-warn {
+    margin-top: 8px; font-size: 1.08rem; font-weight: 800; color: #c62828;
+  }
+  .btn { border: none; border-radius: 10px; padding: 10px 18px; font-size: 14px; cursor: pointer; background: #eef0f5; color: #222; font-weight: 500; transition: all 0.15s; }
+  .btn:hover { filter: brightness(0.96); transform: translateY(-1px); }
+  .btn.primary { background: linear-gradient(135deg, #2563EB, #7C3AED); color: #fff; font-weight: 600; box-shadow: 0 4px 14px rgba(37,99,235,0.35); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+  .btn.sm { padding: 5px 12px; font-size: 12px; border-radius: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .main { display: flex; gap: 14px; align-items: stretch; }
+  /* 左侧竖排大按钮 */
+  .toolbar { display: flex; flex-direction: column; gap: 10px; width: 158px; flex: none; }
+  .toolbar .tbtn { width: 100%; padding: 14px 10px; font-size: 15px; font-weight: 600; }
+  .toolbar .progress { width: 100%; }
+  /* 中间大预览 */
+  .preview {
+    flex: 1; min-height: 560px; background: #f2f4f9; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px dashed #c3c9d6; position: relative; overflow: hidden;
+    transition: all 0.15s;
+  }
+  .preview.drag { border-color: #2563EB; background: #e5eeff; border-width: 3px; }
+  .preview img { max-width: 100%; max-height: 560px; display: block; border-radius: 6px; }
+  .preview .ph { color: #8a92a6; font-size: 15px; text-align: center; line-height: 2; pointer-events: none; padding: 16px; }
+  .preview .ph a, .preview .ph u { pointer-events: auto; cursor: pointer; color: #2563EB; }
+  /* 双视角并排:对方视角(封面) / 点开效果(动画) */
+  .duo { display: flex; gap: 16px; width: 100%; height: 100%; align-items: center; justify-content: center; padding: 16px; }
+  .duo-cell { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; }
+  .duo-title { font-size: 13px; color: #556; background: #e8ebf3; border-radius: 999px; padding: 4px 14px; }
+  .duo-cell img { max-width: 100%; max-height: 500px; border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,0.14); display: block; }
+  /* 底部队列:横向缩略图 chips */
+  .queuebar { margin-top: 14px; background: #f8f9fb; border-radius: 14px; padding: 10px 14px 12px; }
+  .queue-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .queue-head h3 { font-size: 14px; color: #444; margin-right: auto; }
+  .chips { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 2px; }
+  .chip {
+    flex: none; width: 118px; background: #fff; border-radius: 10px; padding: 6px;
+    cursor: pointer; border: 2px solid transparent; transition: border 0.12s;
+  }
+  .chip:hover { border-color: #b9c6e8; }
+  .chip.cur { border-color: #2563EB; }
+  .chip.sel { border-color: #7C3AED; background: #f3ecff; }
+  .ctxmenu { position: fixed; z-index: 200; background: #fff; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.2); padding: 4px; font-size: 13px; min-width: 130px; }
+  .ctxmenu div { padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+  .ctxmenu div:hover { background: #eef1f7; }
+  .chip-img { position: relative; width: 100%; height: 78px; border-radius: 6px; overflow: hidden; background: #eef0f5; display: flex; align-items: center; justify-content: center; }
+  .chip-img img { max-width: 100%; max-height: 100%; display: block; }
+  .chip-seq {
+    position: absolute; top: 3px; left: 3px; min-width: 18px; height: 18px; border-radius: 9px;
+    background: rgba(0,0,0,0.62); color: #fff; font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px;
+  }
+  .chip-name { font-size: 11px; color: #555; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-st { font-size: 11px; margin-top: 2px; }
+  .st.pending { color: #888; } .st.done { color: #2e7d32; } .st.failed { color: #c62828; } .st.processing { color: #1565c0; }
+  @media (max-width: 760px) {
+    body { padding: 8px; }
+    .card { padding: 16px; border-radius: 16px; }
+    .main { flex-direction: column; }
+    .toolbar { flex-direction: row; width: 100%; overflow-x: auto; gap: 8px; padding-bottom: 4px; }
+    .toolbar .tbtn { width: auto; flex: none; padding: 12px 16px; min-height: 44px; white-space: nowrap; }
+    .preview { min-height: 300px; }
+    .preview img { max-height: 340px; }
+    .duo { flex-direction: column; gap: 10px; }
+    .duo-cell img { max-height: 230px !important; }
+    header h1 { font-size: 1.35rem; }
+    header h1 .logo { height: 1.3em; }
+    .desc { font-size: 0.85rem; padding: 8px 10px; margin-bottom: 10px; }
+    .btn { padding: 11px 14px; }
+    .chip { width: 100px; }
+    .queuebar { padding: 8px 10px 10px; }
+  }
+  /* 触屏设备:加大触控目标 */
+  @media (pointer: coarse) {
+    .btn { min-height: 44px; }
+    .chip { padding: 8px; }
+  }
+  .status { font-size: 12px; color: #777; }
+  .hidden { display: none !important; }
+  /* file input 跨端安全隐藏:不用 display:none(部分手机浏览器会拒绝程序化 click) */
+  .file-hidden { position: absolute; opacity: 0; width: 1px; height: 1px; overflow: hidden; }
+  .modal canvas { touch-action: none; }
+  .progress { width: 140px; height: 8px; background: #e5e8ef; border-radius: 4px; overflow: hidden; }
+  .progress > i { display: block; height: 100%; background: linear-gradient(90deg,#2563EB,#7C3AED); width: 0; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .modal { background: #fff; border-radius: 16px; padding: 20px; width: 480px; max-width: 92vw; max-height: 86vh; display: flex; flex-direction: column; gap: 10px; }
+  .modal canvas { max-width: 100%; background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0/16px 16px; border-radius: 8px; }
+  .brush-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+  <header>
+    <h1><img id="logoImg" class="logo" alt="logo">png伪装工具</h1>
+    <div class="row">
+      <span id="modeLabel" class="status"></span>
+      <button class="btn sm" id="btnSettings">封面设置</button>
+    </div>
+  </header>
+  <div class="desc">
+    把图片伪装成 APNG 动画:聊天软件里对方不点开时只能看到封面,点击原图即可查看到原本的图片,伪装过的图像导入回本工具即可还原。支持拖放 / 点击选择 / Ctrl+V 粘贴截图 · 全程本地处理,图片不会上传
+    <div class="desc-warn">请下载之后，在手机QQ上勾选原图发送！</div>
+  </div>
+
+  <div class="main">
+    <div class="toolbar">
+      <button class="btn tbtn" id="btnAdd">＋ 添加图片</button>
+      <button class="btn tbtn primary" id="btnDisguise">APNG伪装</button>
+      <button class="btn tbtn primary hidden" id="btnRestore">还原真图</button>
+      <button class="btn tbtn" id="btnDownload" disabled>下载</button>
+      <button class="btn tbtn" id="btnAll">全部伪装</button>
+      <button class="btn tbtn" id="btnZip" disabled>下载全部</button>
+      <button class="btn tbtn" id="btnMosaic">打码…</button>
+      <div class="progress hidden" id="prog"><i id="progBar"></i></div>
+    </div>
+
+    <div class="preview" id="dropZone">
+      <div class="ph" id="ph">把图片或文件夹拖到这里 / 点击选择 / 按 <b>Ctrl+V</b> 粘贴<br><u style="cursor:pointer" id="pickLink">📂 选择图片</u><br><small style="color:#aab">PNG / JPG / GIF · 伪装后可下载发送 · 手机可用</small></div>
+      <img id="pv" class="hidden" alt="">
+      <div class="duo hidden" id="duo">
+        <div class="duo-cell">
+          <div class="duo-title">对方视角 · 不点开时</div>
+          <img id="pvCover" alt="">
+        </div>
+        <div class="duo-cell">
+          <div class="duo-title">点开效果 · 播放动画</div>
+          <img id="pvAnim" alt="">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="queuebar">
+    <div class="queue-head">
+      <h3 id="queueTitle">队列 (0/150)</h3>
+      <span class="status" id="status"></span>
+      <button class="btn sm" id="btnClear" style="margin-left:8px">清空</button>
+    </div>
+    <div class="chips" id="queueList"></div>
+  </div>
+
+  <input type="file" id="fileInput" multiple accept="image/*,.png,.jpg,.jpeg,.gif" class="file-hidden">
+  <input type="file" id="coverInput" accept="image/*" class="file-hidden">
+</div>
+</div>
+
+<script>
+/*__CORE_JS__*/
+</script>
+<script>
+'use strict';
+// ---------- 状态 ----------
+const MAX_BATCH = 150;
+const state = {
+  queue: [],        // {file, name, seq, status:'pending'|'done'|'failed', result:Blob|null, resultName}
+  curIdx: -1,       // 当前预览项
+  showResult: false, // 预览显示结果(伪装封面)还是原图
+  importSeq: 0,     // 导入顺序计数(角标用,删除不复用)
+  selSet: new Set()  // 多选删除:选中的队列序号
+};
+let COVER_B64 = '/*__COVER_B64__*/';
+const coverImg = new Image();
+coverImg.onload = () => console.log('cover loaded', coverImg.naturalWidth);
+if (COVER_B64.startsWith('data:')) coverImg.src = COVER_B64;
+
+// ---------- 全站图标 = logo(内置封面图) ----------
+if (COVER_B64.startsWith('data:')) {
+  // 浏览器标签页 favicon
+  const fav = document.createElement('link');
+  fav.rel = 'icon'; fav.type = 'image/png'; fav.href = COVER_B64;
+  document.head.appendChild(fav);
+  // 标题旁 logo
+  const logo = document.getElementById('logoImg');
+  if (logo) logo.src = COVER_B64;
+}
+
+// ---------- 工具 ----------
+const $ = id => document.getElementById(id);
+function setStatus(s) { $('status').textContent = s || ''; }
+function fmtSize(b) { return b > 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB'; }
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function blobToFrame(blob) {
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  const id = ctx.getImageData(0, 0, c.width, c.height);
+  const frame = { width: c.width, height: c.height, _data: id.data,
+    getRowRGBA(y) { return id.data.subarray(y*c.width*4, (y+1)*c.width*4); } };
+  bmp.close();
+  return frame;
+}
+// GIF 解码(纯 JS 简化版,逐帧合成为全画布)
+async function decodeGifFrames(blob) {
+  // 用 createImageBitmap 无 GIF 帧支持;需内置解析。简化:先尝试 Image 元素(支持动图但只取当前帧)
+  // 完整 GIF 解码器较大;这里用最小实现:读出所有帧用 <img> 的 currentTime 不可行。
+  // —— 方案:HTML 版 GIF 动态伪装依赖内置解码;暂用 ImageDecoder API(Chrome 支持 animated)
+  if (typeof ImageDecoder !== 'undefined') {
+    const dec = new ImageDecoder({ data: await blob.arrayBuffer(), type: 'image/gif' });
+    const frames = [];
+    for (let i = 0; i < dec.tracks.selectedTrack.frameCount; i++) {
+      const r = await dec.decode({ frameIndex: i });
+      const f = await blobToFrame(new Blob([r.image], { type: 'image/png' })); // 不行,image 是 VideoFrame
+    }
+  }
+  throw new Error('GIF 支持需额外解码器');
+}
+
+// ---------- 队列 ----------
+function refreshQueue() {
+  const q = state.queue;
+  $('queueTitle').textContent = `队列 (${q.length}/${MAX_BATCH})`;
+  const list = $('queueList');
+  list.innerHTML = '';
+  q.forEach((it, i) => {
+    const chip = document.createElement('div');
+    const multiSel = state.selSet.size > 0;
+    chip.className = 'chip' + (i === state.curIdx && !multiSel ? ' cur' : '');
+    let stTxt;
+    if (it._isDisguise && it.status === 'pending') stTxt = '伪装图·可还原';
+    else stTxt = { pending: '待处理', processing: '处理中…', done: '✓ 完成', failed: '✗ 失败' }[it.status];
+    const thumb = it.thumb ? `<img src="${it.thumb}" alt="">` : '<span style="color:#b6bcc9;font-size:11px">…</span>';
+    chip.innerHTML = `
+      <div class="chip-img">${thumb}<span class="chip-seq">${it.seq}</span></div>
+      <div class="chip-name" title="${escapeHtml(it.name)}">${escapeHtml(it.name)}</div>
+      <div class="chip-st st ${it.status}">${stTxt}</div>`;
+    const redrawSel = () => {
+      const multi = state.selSet.size > 0;
+      chip.classList.toggle('sel', state.selSet.has(i));
+      chip.classList.toggle('cur', i === state.curIdx && !multi);
+    };
+    // 点击: Ctrl/⌘/Shift = 切换多选; 普通 = 选中该项预览
+    chip.onclick = (e) => {
+      e.stopPropagation();
+      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+        if (state.selSet.has(i)) state.selSet.delete(i); else state.selSet.add(i);
+        redrawSel();
+        setStatus(state.selSet.size > 0 ? `已选 ${state.selSet.size} 项,右键删除` : '');
+        return;
+      }
+      if (state.selSet.size > 0) {
+        state.selSet.clear();
+        redrawSel();
+      }
+      state.curIdx = i;
+      state.showResult = it.status === 'done' && !!it.result;
+      showCurrent(); refreshQueue();
+    };
+    // 右键菜单:删除选中 / 删除该项
+    chip.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const menu = document.createElement('div');
+      menu.className = 'ctxmenu';
+      const targets = state.selSet.size > 0 ? [...state.selSet] : [i];
+      if (!state.selSet.has(i) && state.selSet.size > 0) state.selSet.add(i);
+      const final = [...state.selSet];
+      const delSel = document.createElement('div');
+      delSel.textContent = state.selSet.size > 1 ? `删除选中 (${state.selSet.size})` : '删除该项';
+      const delAll = document.createElement('div');
+      delAll.textContent = '清空队列';
+      menu.append(delSel, delAll);
+      document.body.appendChild(menu);
+      const place = () => {
+        const r = chip.getBoundingClientRect();
+        menu.style.left = Math.min(e.clientX, innerWidth - 120) + 'px';
+        menu.style.top = Math.min(e.clientY, innerHeight - 70) + 'px';
+      };
+      place();
+      const close = () => menu.remove();
+      menu.onclick = (ev) => {
+        const act = ev.target;
+        close();
+        if (act === delSel) {
+          removeQueueIndices(state.selSet.size > 0 ? [...state.selSet] : [i]);
+        } else if (act === delAll) {
+          if (confirm('清空整个队列?')) { state.queue.length = 0; state.curIdx = -1; state.selSet.clear(); refreshQueue(); showCurrent(); setStatus('已清空'); }
+        }
+      };
+      setTimeout(() => {
+        const hide = (e) => { close(); document.removeEventListener('pointerdown', hide, true); };
+        document.addEventListener('pointerdown', hide, true);
+      }, 0);
+    };
+    redrawSel();
+    list.appendChild(chip);
+  });
+  // 当前项滚动到可见
+  const cur = list.querySelector('.chip.cur');
+  if (cur) cur.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  updateButtons();
+}
+
+function removeQueueIndices(idxs) {
+  // 按序号降序删除,避免索引错位
+  idxs.sort((a, b) => b - a);
+  for (const i of idxs) state.queue.splice(i, 1);
+  state.selSet.clear();
+  if (state.queue.length === 0) { state.curIdx = -1; refreshQueue(); showCurrent(); setStatus('已删除'); return; }
+  if (state.curIdx >= state.queue.length) state.curIdx = state.queue.length - 1;
+  const it = state.queue[state.curIdx];
+  state.showResult = it.status === 'done' && !!it.result;
+  refreshQueue(); showCurrent();
+  setStatus('已删除');
+}
+
+function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function makeThumb(blob) {
+  try {
+    const bmp = await createImageBitmap(blob);
+    const s = 96 / Math.max(bmp.width, bmp.height);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(bmp.width * Math.min(1, s)) || 1);
+    c.height = Math.max(1, Math.round(bmp.height * Math.min(1, s)) || 1);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    bmp.close();
+    return c.toDataURL('image/png');
+  } catch (e) { return null; }
+}
+
+function addFiles(fileList) {
+  const files = Array.from(fileList).filter(f => /\.(png|jpe?g|gif)$/i.test(f.name) || f.type.startsWith('image/'));
+  let added = 0, rejected = 0;
+  for (const f of files) {
+    if (state.queue.length >= MAX_BATCH) { rejected++; continue; }
+    const it = { file: f, name: f.name, seq: ++state.importSeq, status: 'pending', result: null, _isDisguise: false, thumb: null };
+    state.queue.push(it);
+    prepareItem(it); // 异步识别伪装
+    makeThumb(f).then(t => { it.thumb = t; refreshQueue(); }); // 队列缩略图
+    added++;
+  }
+  // 新图导入后自动切换预览到第一张新图(即使之前停在某个结果上)
+  if (added) {
+    state.curIdx = state.queue.length - added;
+    state.showResult = false;
+  }
+  refreshQueue();
+  showCurrent();
+  setStatus(added ? `已导入 ${added} 张${rejected ? `,超限拒绝 ${rejected}` : ''}` : (rejected ? `已达上限 ${MAX_BATCH}` : '未找到图片'));
+}
+
+// ---------- 预览 ----------
+async function showCurrent() {
+  const it = state.queue[state.curIdx];
+  const pv = $('pv'), ph = $('ph'), duo = $('duo');
+  // 动画播放的 objectURL 管理
+  if (state._animUrl) { URL.revokeObjectURL(state._animUrl); state._animUrl = null; }
+  if (!it) {
+    pv.classList.add('hidden'); duo.classList.add('hidden'); ph.classList.remove('hidden');
+    updateButtons(); return;
+  }
+  const showDisguiseResult = state.showResult && it.result && it._showAsResult === true;
+  if (showDisguiseResult) {
+    // 双视角:对方视角(封面快照,静态) / 点开效果(播放伪装 APNG)
+    ph.classList.add('hidden'); pv.classList.add('hidden'); duo.classList.remove('hidden');
+    document.getElementById('pvCover').src = it._coverPreview || '';
+    state._animUrl = URL.createObjectURL(it.result);
+    document.getElementById('pvAnim').src = state._animUrl;
+  } else {
+    // 单图:原图 / 还原结果 / 打码图
+    duo.classList.add('hidden'); ph.classList.add('hidden'); pv.classList.remove('hidden');
+    const blob = (state.showResult && it.result) ? it.result : it.file;
+    const url = URL.createObjectURL(blob);
+    pv.onload = () => URL.revokeObjectURL(url);
+    pv.src = url;
+  }
+  updateButtons();
+}
+
+function updateButtons() {
+  const it = state.queue[state.curIdx];
+  const has = !!it;
+  // 当前对象是伪装图:拖入的伪装文件 / 或最新结果是伪装(且正在显示它)
+  const isDisguise = has && (it._isDisguise || (state.showResult && it._showAsResult === true));
+  $('btnDisguise').classList.toggle('hidden', has && isDisguise);
+  $('btnRestore').classList.toggle('hidden', !(has && isDisguise));
+  $('btnMosaic').disabled = !(has && !isDisguise);
+  $('btnDownload').disabled = !(has && ((state.showResult && it.result) || it.status === 'done' || it._isDisguise));
+  const pending = state.queue.filter(x => x.status === 'pending' || x.status === 'failed').length;
+  $('btnAll').disabled = !pending;
+  const itCur = state.queue[state.curIdx];
+  // 打包/批量下载按钮:完成数 ≥2 启用;>30 张自动切换为打包形式
+  const doneN = state.queue.filter(x => x.status === 'done' && x.result).length;
+  $('btnZip').disabled = doneN < 2;
+  $('btnZip').textContent = doneN > 30 ? `打包下载全部(${doneN})` : `下载全部(${doneN})`;
+  $('modeLabel').textContent = state.queue.length > 1 ? '批量模式' : (has ? '单图' : '');
+}
+
+// ---------- 伪装/还原 ----------
+async function disguiseOne(it) {
+  it.status = 'processing'; refreshQueue();
+  try {
+    const frame = await blobToFrame(it.file);
+    // 批量(队列>1)时把导入序号画进封面左上角
+    const badge = state.queue.length > 1 ? it.seq : null;
+    const cover = await currentCoverFrame(frame.width, frame.height, badge);
+    it._coverPreview = cover.dataUrl; // 封面快照(预览用)
+    it.thumb = cover.dataUrl;
+    let png;
+    png = await buildDisguise(frame.width, frame.height, cover.frame, [frame], { contentKind: 'STATIC', contentFrameCount: 1, playCount: 0 });
+    it.result = new Blob([png], { type: 'image/png' });
+    it.status = 'done';
+    it._showAsResult = true; // 结果是伪装图
+    state.showResult = true;
+    setStatus('伪装完成:点「下载」保存后发到 QQ(作为文件发送,完整保留)' + (badge ? ` · 封面序号 ${badge}` : ''));
+  } catch (e) {
+    it.status = 'failed';
+    setStatus('伪装失败: ' + e.message);
+  }
+  refreshQueue(); showCurrent();
+}
+
+async function restoreOne(it) {
+  it.status = 'processing'; refreshQueue();
+  try {
+    let src;
+    if (it._isDisguise) {
+      src = it._disguiseData;
+    } else if (it.result) {
+      src = new Uint8Array(await it.result.arrayBuffer());
+    } else {
+      src = new Uint8Array(await it.file.arrayBuffer());
+    }
+    const restored = await restoreDisguise(src);
+    it.thumb = await makeThumb(new Blob([restored], { type: 'image/png' }));
+    it.result = new Blob([restored], { type: 'image/png' });
+    it.status = 'done';
+    it._isDisguise = false;
+    it._showAsResult = false; // 结果是真图
+    state.showResult = false;
+    setStatus('还原完成:下载即可看到原图');
+  } catch (e) {
+    it.status = 'failed';
+    setStatus('还原失败: ' + e.message);
+  }
+  refreshQueue(); showCurrent();
+}
+
+async function disguiseAll() {
+  // 排除伪装文件(它们应被还原,不能再次伪装)
+  const items = state.queue.filter(x => (x.status === 'pending' || x.status === 'failed') && !x._isDisguise);
+  const prog = $('prog'), bar = $('progBar');
+  prog.classList.remove('hidden');
+  let done = 0;
+  for (const it of items) {
+    await disguiseOne(it);
+    done++;
+    bar.style.width = (done / items.length * 100) + '%';
+  }
+  setTimeout(() => prog.classList.add('hidden'), 600);
+}
+
+// ---------- 封面 ----------
+async function currentCoverFrame(w, h, badgeNum) {
+  // badgeNum:批量伪装时画进封面左上角的导入序号(像素级,预览/下载/发出都带)
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  // 蓝底
+  ctx.fillStyle = 'rgb(37,99,235)';
+  ctx.fillRect(0, 0, w, h);
+  // 封面图 contain(等比缩小完整居中)
+  const src = window._customCover || coverImg;
+  if (src.complete && src.naturalWidth) {
+    const scale = Math.min(w / src.naturalWidth, h / src.naturalHeight);
+    const dw = Math.max(1, Math.floor(src.naturalWidth * scale));
+    const dh = Math.max(1, Math.floor(src.naturalHeight * scale));
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(src, Math.floor((w - dw) / 2), Math.floor((h - dh) / 2), dw, dh);
+  }
+  // 序号角标:半透明黑圆角块 + 白色粗体数字(任何封面背景上都清晰)
+  if (badgeNum) {
+    const fs = Math.max(24, Math.round(Math.min(w, h) * 0.09));
+    ctx.font = `bold ${fs}px system-ui, -apple-system, sans-serif`;
+    const text = String(badgeNum);
+    const tw = ctx.measureText(text).width;
+    const padX = fs * 0.5, padY = fs * 0.32;
+    const bx = Math.round(fs * 0.45), by = Math.round(fs * 0.45);
+    const bw = Math.ceil(tw + padX * 2), bh = Math.ceil(fs + padY * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.62)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, bh / 2); else ctx.rect(bx, by, bw, bh);
+    ctx.fill();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, bx + padX, by + bh / 2 + fs * 0.04);
+  }
+  const id = ctx.getImageData(0, 0, w, h);
+  const dataUrl = c.toDataURL('image/png'); // 封面快照(预览用,<img> 播动画会跳过封面帧)
+  return { frame: { width: w, height: h, _data: id.data, getRowRGBA(y) { return id.data.subarray(y*w*4, (y+1)*w*4); } }, dataUrl };
+}
+
+// 拖入伪装文件 → 自动识别,允许还原(在 disguiseOne 前检测结果是否为伪装)
+async function prepareItem(it) {
+  // 检测文件是否伪装 APNG(读全文件,小文件可接受;伪装文件一般 < 几 MB)
+  try {
+    const buf = new Uint8Array(await it.file.arrayBuffer());
+    const info = inspectDisguise(buf);
+    if (info) {
+      // 是伪装文件 → 提供还原
+      it._isDisguise = true;
+      it._disguiseData = buf;
+      // 关键:识别完成后刷新界面,否则「还原真图」按钮不会出现
+      if (state.queue[state.curIdx] === it) {
+        state.showResult = true; // 预览封面(伪装文件首帧即封面)
+      }
+      refreshQueue();
+      showCurrent();
+    }
+  } catch (e) {}
+}
+
+// ---------- 事件 ----------
+const dz = $('dropZone');
+['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('drag'); }));
+['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('drag'); }));
+dz.addEventListener('drop', async e => {
+  const items = Array.from(e.dataTransfer.items || []);
+  const files = [];
+  for (const it of items) {
+    if (it.kind === 'file') {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+      // 文件夹:webkitGetAsEntry 递归
+      const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (entry && entry.isDirectory) {
+        await walkDir(entry, files);
+      }
+    }
+  }
+  if (files.length) addFiles(files);
+});
+function walkDir(entry, out) {
+  return new Promise(res => {
+    const reader = entry.createReader();
+    const readBatch = () => reader.readEntries(async entries => {
+      if (!entries.length) return res();
+      for (const en of entries) {
+        if (en.isFile) {
+          const f = await new Promise(r => en.file(r));
+          if (/\.(png|jpe?g|gif)$/i.test(f.name)) out.push(f);
+        } else if (en.isDirectory) await walkDir(en, out);
+      }
+      readBatch();
+    });
+    readBatch();
+  });
+}
+$('pickLink').onclick = () => $('fileInput').click();
+$('btnAdd').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+$('btnDisguise').onclick = () => { const it = state.queue[state.curIdx]; if (it) disguiseOne(it); };
+$('btnRestore').onclick = () => { const it = state.queue[state.curIdx]; if (it) restoreOne(it); };
+$('btnDownload').onclick = () => {
+  const it = state.queue[state.curIdx];
+  if (!it) return;
+  const blob = (state.showResult && it.result) ? it.result : it.file;
+  const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
+  downloadBlob(blob, state.showResult ? base + '_伪装.png' : base + '.png');
+  setStatus(state.showResult
+    ? '已下载伪装文件 → 发送时请以「文件」方式发到 QQ(图片消息会被 QQ 压缩丢动画;手机发图可尝试勾选「原图」),对方保存后拖回本工具即可还原'
+    : '已下载');
+};
+$('btnAll').onclick = disguiseAll;
+
+// ---------- 批量下载(zip,store 模式:PNG 已压缩,不二次压缩) ----------
+function buildZip(entries) {
+  // entries: [{name:string, data:Uint8Array}]
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name);
+    const crc = crc32(e.data);
+    const lfh = new Uint8Array(30 + name.length);
+    const dv = new DataView(lfh.buffer);
+    dv.setUint32(0, 0x04034b50, true);
+    dv.setUint16(4, 20, true);      // version needed
+    dv.setUint16(6, 0x0800, true);  // flags bit11: UTF-8 文件名
+    dv.setUint16(8, 0, true);       // method: store
+    dv.setUint16(10, 0, true); dv.setUint16(12, 0, true); // dos time/date
+    dv.setUint32(14, crc, true);
+    dv.setUint32(18, e.data.length, true);
+    dv.setUint32(22, e.data.length, true);
+    dv.setUint16(26, name.length, true);
+    dv.setUint16(28, 0, true);
+    lfh.set(name, 30);
+    parts.push(lfh, e.data);
+    central.push({ name, crc, size: e.data.length, offset });
+    offset += lfh.length + e.data.length;
+  }
+  const cdStart = offset;
+  let cdSize = 0;
+  for (const c of central) {
+    const cd = new Uint8Array(46 + c.name.length);
+    const dv = new DataView(cd.buffer);
+    dv.setUint32(0, 0x02014b50, true);
+    dv.setUint16(4, 20, true); dv.setUint16(6, 20, true);
+    dv.setUint16(8, 0x0800, true);
+    dv.setUint16(10, 0, true);
+    dv.setUint16(12, 0, true); dv.setUint16(14, 0, true);
+    dv.setUint32(16, c.crc, true);
+    dv.setUint32(20, c.size, true);
+    dv.setUint32(24, c.size, true);
+    dv.setUint16(28, c.name.length, true);
+    dv.setUint32(42, c.offset, true);
+    cd.set(c.name, 46);
+    parts.push(cd); cdSize += cd.length;
+  }
+  const eocd = new Uint8Array(22);
+  const dv = new DataView(eocd.buffer);
+  dv.setUint32(0, 0x06054b50, true);
+  dv.setUint16(8, central.length, true);
+  dv.setUint16(10, central.length, true);
+  dv.setUint32(12, cdSize, true);
+  dv.setUint32(16, cdStart, true);
+  parts.push(eocd);
+  return concatBytes(parts);
+}
+
+// ---------- 文件名统一(下载/分享/zip 共用,序号+原名) ----------
+function nameForItem(it) {
+  const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
+  const suffix = it._showAsResult === false ? '' : '_伪装';
+  return `${String(it.seq).padStart(3, '0')}_${base}${suffix}.png`;
+}
+
+$('btnClear').onclick = () => {
+  state.queue.length = 0;
+  state.curIdx = -1;
+  state.showResult = false;
+  state.importSeq = 0;   // 序号从 1 重新计数
+  if (state._animUrl) { URL.revokeObjectURL(state._animUrl); state._animUrl = null; }
+  refreshQueue();
+  showCurrent();
+  setStatus('已清空,可重新导入');
+};
+
+$('btnZip').onclick = async () => {
+  const done = state.queue.filter(x => x.status === 'done' && x.result);
+  if (!done.length) return;
+  const nameOf = it => {
+    const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
+    const suffix = it._showAsResult === false ? '' : '_伪装';
+    return `${String(it.seq).padStart(3, '0')}_${base}${suffix}.png`;
+  };
+  if (done.length > 30) {
+    // 打包 zip(超过 30 张,浏览器逐个下载体验差)
+    const entries = [];
+    for (const it of done) entries.push({ name: nameOf(it), data: new Uint8Array(await it.result.arrayBuffer()) });
+    const zip = buildZip(entries);
+    downloadBlob(new Blob([zip], { type: 'application/zip' }), '伪装批量.zip');
+    setStatus(`已打包 ${entries.length} 张(文件名含导入序号),发 QQ 时从压缩包取出以文件发送`);
+    return;
+  }
+  // ≤30 张:逐张触发下载(不打包)
+  for (const it of done) {
+    downloadBlob(it.result, nameOf(it));
+    await new Promise(r => setTimeout(r, 250)); // 间隔,避免浏览器吞掉连续下载
+  }
+  setStatus(`已触发 ${done.length} 个下载;若浏览器询问“允许下载多个文件”,请选允许`);
+};
+// ---------- 封面设置(弹窗:预览 + 提醒 + 持久化 + 超大图自动缩小) ----------
+const COVER_STORE_KEY = 'pngDisguise_customCover';
+
+function applyCoverSrc(src) {
+  const im = new Image();
+  im.onload = () => { window._customCover = im; };
+  im.src = src;
+  return im;
+}
+function currentCoverSrc() {
+  return window._customCover ? window._customCover.src : COVER_B64;
+}
+
+function openCoverSettings() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<div class="modal">
+    <h3>封面设置</h3>
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div style="width:150px;height:150px;background:#f0f0f0;border:1px solid #ddd;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+        <img id="covPrev" style="max-width:100%;max-height:100%">
+      </div>
+      <div style="flex:1;min-width:220px;font-size:13px;line-height:1.8;color:#555">
+        生成伪装图时,封面会<b>按伪装图片的尺寸等比缩放、完整居中(不裁剪)</b>,四周以蓝底补齐。
+        <div style="background:#fff7e6;border-left:4px solid #f59e0b;padding:6px 10px;margin-top:8px;border-radius:6px;color:#92600a">
+          ⚠ 封面图<b>不需要太大</b>:过大的图片会被自动缩小到 512px 以内,太大还会拖慢处理速度。建议直接使用 512×512 左右的图片。
+        </div>
+      </div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn" id="covReset">恢复内置默认</button>
+      <button class="btn primary" id="covPick">选择封面图片…</button>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn primary" id="covOk">确定</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+
+  const prev = modal.querySelector('#covPrev');
+  prev.src = currentCoverSrc();
+
+  modal.querySelector('#covPick').onclick = () => $('coverInput').click();
+  modal.querySelector('#covReset').onclick = () => {
+    localStorage.removeItem(COVER_STORE_KEY);
+    window._customCover = null;
+    prev.src = COVER_B64;
+    setStatus('封面已恢复内置默认');
+  };
+  modal.querySelector('#covOk').onclick = () => modal.remove();
+}
+
+function importCoverFile(file) {
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    URL.revokeObjectURL(url);
+    const MAX = 512;
+    let src;   // 用于存储/显示的画布或 Image
+    let shrunk = false;
+    if (Math.max(im.naturalWidth, im.naturalHeight) > MAX) {
+      const sc = MAX / Math.max(im.naturalWidth, im.naturalHeight);
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(im.naturalWidth * sc));
+      c.height = Math.max(1, Math.round(im.naturalHeight * sc));
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      src = c;
+      shrunk = true;
+    } else {
+      src = im;
+    }
+    // 扁平化到 dataURL 持久化
+    const flat = document.createElement('canvas');
+    flat.width = src.width || src.naturalWidth; flat.height = src.height || src.naturalHeight;
+    flat.getContext('2d').drawImage(src, 0, 0);
+    const b64 = flat.toDataURL('image/png');
+    try { localStorage.setItem(COVER_STORE_KEY, b64); } catch (e) { /* 存储满则仅本次生效 */ }
+    applyCoverSrc(b64);
+    setStatus(shrunk ? '封面已设置(图片较大,已自动缩小到 512px 以内)' : '封面已设置');
+  };
+  im.onerror = () => { URL.revokeObjectURL(url); setStatus('封面图片读取失败'); };
+  im.src = url;
+}
+
+// 启动:恢复上次设置的自定义封面
+try {
+  const saved = localStorage.getItem(COVER_STORE_KEY);
+  if (saved) applyCoverSrc(saved);
+} catch (e) {}
+
+$('btnSettings').onclick = () => openCoverSettings();
+$('coverInput').onchange = e => {
+  const f = e.target.files[0];
+  if (f) importCoverFile(f);
+  e.target.value = '';
+};
+$('btnMosaic').onclick = () => { const it = state.queue[state.curIdx]; if (it) openMosaic(it); };
+
+// ---------- 打码编辑器(离屏图层 + 视图缩放/平移,支持触屏捏合) ----------
+function openMosaic(it) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<div class="modal">
+    <h3>打码编辑 <small style="color:#999;font-weight:400">滚轮/双指缩放 · 平移模式或双指拖动 · 双击复位</small></h3>
+    <div class="mc-wrap"><canvas id="mc"></canvas></div>
+    <div class="brush-row">
+      <button class="btn sm" data-tool="mosaic">马赛克</button>
+      <button class="btn sm" data-tool="black">黑色</button>
+      <button class="btn sm" data-tool="white">白色</button>
+      <button class="btn sm" data-tool="pan">✥ 平移</button>
+      <span style="width:1px;height:20px;background:#ddd"></span>
+      <button class="btn sm" data-zoom="out">−</button>
+      <span id="mZoom" style="font-size:12px;width:44px;text-align:center">100%</span>
+      <button class="btn sm" data-zoom="in">＋</button>
+      <button class="btn sm" data-zoom="fit">适应</button>
+    </div>
+    <div class="brush-row">
+      <span style="font-size:12px">笔刷</span>
+      <input type="range" id="mbr" min="8" max="80" value="24" style="flex:1">
+      <button class="btn sm" data-act="undo">撤销</button>
+      <button class="btn sm" data-act="reset">重置</button>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn" id="mCancel">取消</button>
+      <button class="btn primary" id="mOk">完成</button>
+    </div></div>`;
+  document.body.appendChild(modal);
+
+  const cv = modal.querySelector('#mc');
+  const vctx = cv.getContext('2d');
+  const off = document.createElement('canvas');   // 原图尺寸离屏图层(涂抹目标)
+  const offCtx = off.getContext('2d', { willReadFrequently: true });
+  let tool = 'mosaic', brush = 24, panMode = false;
+  const view = { scale: 1, ox: 0, oy: 0 };
+  const undos = [];
+  let imgW = 1, imgH = 1;
+
+  const dpr = window.devicePixelRatio || 1;
+  function canvasSize() {
+    const wrap = cv.parentElement;
+    const w = Math.max(200, wrap.clientWidth - 2);
+    const h = Math.max(200, Math.min(window.innerHeight * 0.5, 460));
+    cv.style.width = w + 'px'; cv.style.height = h + 'px';
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  function fitScale() { return Math.min(cv.width / dpr / imgW, cv.height / dpr / imgH); }
+  function fit() {
+    view.scale = fitScale();
+    view.ox = (cv.width / dpr - imgW * view.scale) / 2;
+    view.oy = (cv.height / dpr - imgH * view.scale) / 2;
+    zoomLabel(); drawView();
+  }
+  function clampPan() {
+    const cw = cv.width / dpr, ch = cv.height / dpr;
+    const dw = imgW * view.scale, dh = imgH * view.scale;
+    if (dw <= cw) view.ox = (cw - dw) / 2; else view.ox = Math.min(0, Math.max(cw - dw, view.ox));
+    if (dh <= ch) view.oy = (ch - dh) / 2; else view.oy = Math.min(0, Math.max(ch - dh, view.oy));
+  }
+  function zoomAt(cx, cy, factor) {
+    const ns = Math.min(12, Math.max(fitScale() * 0.9, view.scale * factor));
+    view.ox = cx - (cx - view.ox) * (ns / view.scale);
+    view.oy = cy - (cy - view.oy) * (ns / view.scale);
+    view.scale = ns;
+    clampPan(); zoomLabel(); drawView();
+  }
+  function zoomLabel() {
+    const fit = fitScale();
+    modal.querySelector('#mZoom').textContent = Math.round(view.scale / fit * 100) + '%';
+  }
+  function drawView() {
+    vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const cw = cv.width / dpr, ch = cv.height / dpr;
+    vctx.fillStyle = '#f0f0f0';
+    vctx.fillRect(0, 0, cw, ch);
+    vctx.imageSmoothingQuality = 'high';
+    vctx.drawImage(off, view.ox, view.oy, imgW * view.scale, imgH * view.scale);
+  }
+  function toImg(p) {
+    return { x: (p.x - view.ox) / view.scale, y: (p.y - view.oy) / view.scale };
+  }
+  function pushUndo() {
+    undos.push(offCtx.getImageData(0, 0, imgW, imgH));
+    if (undos.length > 5) undos.shift();   // 大图内存考虑,限 5 步
+  }
+  function paintAt(imgX, imgY) {
+    const r = (brush / 2) / view.scale;    // 屏幕笔刷半径 → 图像坐标半径
+    if (tool === 'black' || tool === 'white') {
+      offCtx.fillStyle = tool === 'black' ? '#000' : '#fff';
+      offCtx.beginPath();
+      offCtx.arc(imgX, imgY, r, 0, Math.PI * 2);
+      offCtx.fill();
+    } else {
+      // 马赛克:块采样填色(原图坐标)
+      const block = Math.max(6, Math.round(r / 3));
+      const x0 = Math.floor((imgX - r) / block) * block, y0 = Math.floor((imgY - r) / block) * block;
+      const x1 = Math.ceil((imgX + r) / block) * block, y1 = Math.ceil((imgY + r) / block) * block;
+      for (let by = y0; by < y1; by += block) {
+        for (let bx = x0; bx < x1; bx += block) {
+          const sx = Math.min(Math.max(bx + (block >> 1), 0), imgW - 1);
+          const sy = Math.min(Math.max(by + (block >> 1), 0), imgH - 1);
+          const d = offCtx.getImageData(sx, sy, 1, 1).data;
+          offCtx.fillStyle = `rgb(${d[0]},${d[1]},${d[2]})`;
+          offCtx.fillRect(bx, by, Math.min(block, imgW - bx), Math.min(block, imgH - by));
+        }
+      }
+    }
+    drawView();
+  }
+
+  const img = new Image();
+  img.onload = () => {
+    imgW = img.naturalWidth; imgH = img.naturalHeight;
+    off.width = imgW; off.height = imgH;
+    offCtx.drawImage(img, 0, 0);
+    canvasSize();
+    fit();
+    window.__mc = { view, off, offCtx, imgWH: () => [imgW, imgH], fitScale };  // 调试/测试钩子
+  };
+  img.src = URL.createObjectURL(it.file);
+
+  // ---- 指针交互:单指=当前工具(涂抹/平移),双指=捏合缩放+拖动 ----
+  const pointers = new Map();
+  let pinchStart = null;
+  cv.style.touchAction = 'none';
+  function evPos(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    pointers.set(e.pointerId, evPos(e));
+    if (pointers.size === 2) {
+      pushUndo();
+      const pts = [...pointers.values()];
+      pinchStart = {
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        mid: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+        scale: view.scale, ox: view.ox, oy: view.oy
+      };
+      return;
+    }
+    if (!panMode) {
+      pushUndo();
+      const p = evPos(e);
+      const ip = toImg(p);
+      paintAt(ip.x, ip.y);
+    }
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!pointers.has(e.pointerId)) return;
+    const prev = pointers.get(e.pointerId);
+    pointers.set(e.pointerId, evPos(e));
+    const p = evPos(e);
+    if (pointers.size === 2 && pinchStart) {
+      const pts = [...pointers.values()];
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      const ns = Math.min(12, Math.max(fitScale() * 0.9, pinchStart.scale * (dist / pinchStart.dist)));
+      view.scale = ns;
+      view.ox = mid.x - (mid.x - pinchStart.ox) * (ns / pinchStart.scale);
+      view.oy = mid.y - (mid.y - pinchStart.oy) * (ns / pinchStart.scale);
+      clampPan(); zoomLabel(); drawView();
+      return;
+    }
+    if (panMode) {
+      view.ox += p.x - prev.x; view.oy += p.y - prev.y;
+      clampPan(); drawView();
+    } else {
+      const ip = toImg(p);
+      paintAt(ip.x, ip.y);
+    }
+  });
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinchStart = null;
+  }
+  cv.addEventListener('pointerup', endPointer);
+  cv.addEventListener('pointercancel', endPointer);
+  // 桌面滚轮缩放(以鼠标为锚点)
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    const p = evPos(e);
+    zoomAt(p.x, p.y, e.deltaY < 0 ? 1.2 : 0.8);
+  }, { passive: false });
+  cv.addEventListener('dblclick', () => fit());
+
+  modal.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
+    tool = b.dataset.tool;
+    panMode = (tool === 'pan');
+    modal.querySelectorAll('[data-tool]').forEach(x => { x.style.background = ''; x.style.color = ''; });
+    b.style.background = '#dce7ff'; b.style.color = '#2563EB';
+  });
+  modal.querySelector('[data-tool="mosaic"]').style.background = '#dce7ff';
+  modal.querySelectorAll('[data-zoom]').forEach(b => b.onclick = () => {
+    const cw = cv.width / dpr, ch = cv.height / dpr;
+    if (b.dataset.zoom === 'fit') fit();
+    else zoomAt(cw / 2, ch / 2, b.dataset.zoom === 'in' ? 1.25 : 0.8);
+  });
+  modal.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+    if (b.dataset.act === 'undo') {
+      if (undos.length) { offCtx.putImageData(undos.pop(), 0, 0); drawView(); }
+    } else {
+      undos.length = 0;
+      offCtx.drawImage(img, 0, 0);
+      drawView();
+    }
+  });
+  modal.querySelector('#mbr').oninput = e => brush = +e.target.value;
+  window.addEventListener('resize', onWinResize);
+  function onWinResize() { canvasSize(); clampPan(); drawView(); }
+
+  modal.querySelector('#mCancel').onclick = () => { window.removeEventListener('resize', onWinResize); window.__mc = null; modal.remove(); };
+  modal.querySelector('#mOk').onclick = () => {
+    window.removeEventListener('resize', onWinResize);
+    modal.remove();
+    off.toBlob(blob => {
+      const it2 = state.queue[state.curIdx];
+      // 打码 = 产生新原图:替换 file,使后续 伪装/下载/再次打码 全部基于打码后的图
+      it2.file = blob;
+      it2.name = it2.name.replace(/\.[^.]+$/, '') + '_打码.png';
+      it2.status = 'pending';          // 打码后回到待处理,可重新伪装
+      it2.result = null;               // 清掉旧结果(伪装图),避免混淆
+      it2._isDisguise = false;
+      it2._showAsResult = false;
+      state.showResult = false;
+      state.importSeq = state.importSeq; // 序号保持
+      makeThumb(blob).then(t => { it2.thumb = t; refreshQueue(); });
+      setStatus('打码完成:当前图已替换为打码后的图,可「APNG伪装」或「下载」');
+      refreshQueue(); showCurrent();
+    }, 'image/png');
+  };
+}
+
+refreshQueue();
+// ---------- Ctrl+V 粘贴图片(截图/复制的图直接进队列) ----------
+document.addEventListener('paste', e => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  const files = [];
+  for (const it of items) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) {
+        // 截图粘贴没有文件名,补一个
+        const ext = (it.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        files.push(new File([f], f.name && f.name !== 'image.png' ? f.name : `粘贴图片_${Date.now()}.${ext}`, { type: it.type }));
+      }
+    }
+  }
+  if (files.length) {
+    e.preventDefault();
+    addFiles(files);
+  }
+});
+</script>
+</body>
+</html>
