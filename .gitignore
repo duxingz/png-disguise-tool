@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller 构建产物
+py/build/
+py/dist/
+py/*.spec
+
+# 早期 Kotlin 构建残留(已废弃)
+build/
+desktop/build/
+core/build/
+
+# 工具/临时
+html/node_modules/
+html/package.json
+html/package-lock.json
+*.tmp
+*_test.*
+_test*.png
+
+# 大型交付物(不纳入 git;发布走 GitHub Release)
+png伪装工具.exe
+png伪装工具.html
+png伪装工具-分享版.zip
+
+# 环境
+.idea/
+.vscode/
+*.iml
+
+# Gradle 缓存
+.gradle/
