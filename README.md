@@ -43,8 +43,7 @@
 | `html/` | **网页版源码**：`template.html`（界面+逻辑）、`core.js`（伪装编解码核心，与桌面版同格式）、`build.py`（把核心+封面内嵌生成单文件 html） |
 | `deploy/index.html` | **已生成的网页版单文件**（部署用，Netlify/GitHub Pages 直接传这个） |
 | `py/` | **Windows 桌面版源码**（PySide6，当前主版本）：`app.py` 入口、`pngdisguise/`（编解码+图像处理）、`ui/`（主窗/打码/设置）、`assets/`（内置封面）、`启动png伪装工具.bat` |
-| `core/`、`desktop/`、`android/` | 早期 Kotlin 版（已停止开发，格式互通，仅作参考保留） |
-| `使用说明.txt`（在 zip 内） | 面向普通用户的图文说明 |
+| `使用说明.txt` | 在分享 zip 内，面向普通用户的图文说明（源码同时收录在 `py/使用说明.txt`） |
 
 ## ⚙ 本地构建
 
