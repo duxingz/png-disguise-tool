@@ -127,6 +127,11 @@ class ApngWriter:
         self._write_image_data(frame, is_default=False)
         self.written += 1
 
+    def write_extra_chunks(self, chunks: list[tuple[bytes, bytes]]):
+        """在 IEND 前追加自定义块(如 eXIf/tEXt 元数据,可选保留元数据用)。"""
+        for ctype, data in chunks:
+            self.chunks += _chunk_bytes(ctype, data)
+
     def finish(self) -> bytes:
         if self.written != self.declared:
             raise CodecError("帧数与声明不一致")

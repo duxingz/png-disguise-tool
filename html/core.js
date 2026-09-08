@@ -193,6 +193,10 @@ async function buildDisguise(width, height, coverFrame, truthFrames, opts) {
       await writeFrameData(f, f.delayNum || 10, 100, 0, 0, width, height);
     }
   }
+  // 可选:保留原图元数据块(eXIf/tEXt/iTXt/zTXt,由调用方提取传入)
+  for (const mc of (opts.extraChunks || [])) {
+    chunks.push(chunk(mc.type, mc.data));
+  }
   chunks.push(chunk('IEND', new Uint8Array(0)));
   return concatBytes(chunks);
 }

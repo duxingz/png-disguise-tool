@@ -75,14 +75,74 @@ def _load_image(path: str) -> Image.Image:
 
 
 # ---------------------------------------------------------------------------
+def extract_png_meta_chunks(png_bytes: bytes) -> list[tuple[str, bytes]]:
+    import struct as _s
+    out = []
+    sig = bytes([0x89]) + b"PNG"
+    if not png_bytes.startswith(sig):
+        return out
+    pos = 8
+    META = {b"tEXt", b"iTXt", b"zTXt", b"eXIf"}
+    while pos + 8 <= len(png_bytes):
+        length = _s.unpack(">I", png_bytes[pos:pos+4])[0]
+        ctype = png_bytes[pos+4:pos+8]
+        payload = png_bytes[pos+8:pos+8+length]
+        if ctype in META:
+            out.append((ctype.decode("latin-1"), payload))
+        pos += 12 + length
+        if ctype == b"IEND":
+            break
+    return out
+
+
+def extract_jpeg_exif(jpeg_bytes: bytes) -> bytes | None:
+    if not jpeg_bytes.startswith(bytes([0xFF, 0xD8])):
+        return None
+    pos = 2
+    while pos + 4 <= len(jpeg_bytes):
+        marker = jpeg_bytes[pos:pos+2]
+        length = int.from_bytes(jpeg_bytes[pos+2:pos+4], "big")
+        seg = jpeg_bytes[pos+4:pos+2+length]
+        if marker == bytes([0xFF, 0xE1]) and seg.startswith(b"Exif" + bytes([0, 0])):
+            return seg
+        pos += 2 + length
+        if marker == bytes([0xFF, 0xDA]):
+            break
+    return None
+
+
+def build_meta_chunks_png(src_path: str) -> list[tuple[str, bytes]]:
+    try:
+        raw = Path(src_path).read_bytes()
+    except Exception:
+        return []
+    if raw.startswith(bytes([0x89]) + b"PNG"):
+        return extract_png_meta_chunks(raw)
+    if raw.startswith(bytes([0xFF, 0xD8])):
+        exif = extract_jpeg_exif(raw)
+        return [("eXIf", exif)] if exif else []
+    return []
+
+
+def meta_chunks_bytes(chunks: list[tuple[str, bytes]]) -> list[tuple[bytes, bytes]]:
+    return [(t.encode("latin-1"), d) for t, d in chunks]
+
+
+# ---------------------------------------------------------------------------
 # 封面适配(蓝底 contain)
 # ---------------------------------------------------------------------------
 
 def make_cover(canvas_w: int, canvas_h: int, cover_path: str | None = None,
-               cover_image: Image.Image | None = None, badge: int | None = None) -> Image.Image:
-    """生成与画布同尺寸的封面:蓝底 + 封面图等比缩小完整居中(不裁剪)。
+               cover_image: Image.Image | None = None, badge: int | None = None,
+               bg_color: tuple | None = None, transparent: bool = False) -> Image.Image:
+    """生成与画布同尺寸的封面:背景 + 封面图等比缩小完整居中(不裁剪)。
+    bg_color: 背景色 (r,g,b);transparent: 背景透明(封面图本身带透明区域时保持透明)。
     badge:批量伪装时画进封面左上角的导入序号(黑底白字圆角块,像素级)。"""
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), COVER_BG + (255,))
+    if transparent:
+        canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    else:
+        bg = bg_color or COVER_BG
+        canvas = Image.new("RGBA", (canvas_w, canvas_h), (bg[0], bg[1], bg[2], 255))
     src = cover_image
     if src is None:
         src_path = cover_path or DEFAULT_COVER_PATH
@@ -145,11 +205,13 @@ def _load_font_bold(size: int):
 # ---------------------------------------------------------------------------
 
 def disguise_static(src_path: str, cover_path: str | None = None,
-                    cover_image: Image.Image | None = None) -> bytes:
+                    cover_image: Image.Image | None = None,
+                    bg_color: tuple | None = None, transparent: bool = False,
+                    keep_meta: bool = False) -> bytes:
     img = _load_image(src_path)
     w, h = img.size
     _validate(w, h, 1)
-    cover = cover_image if cover_image is not None else make_cover(w, h, cover_path)
+    cover = cover_image if cover_image is not None else make_cover(w, h, cover_path, bg_color=bg_color, transparent=transparent)
 
     writer = apng_codec.ApngWriter(w, h, animation_frames=2, play_count=0,
                                    content_kind="STATIC", content_frame_count=1)
@@ -158,6 +220,8 @@ def disguise_static(src_path: str, cover_path: str | None = None,
     # 保活帧 1x1(与 Kotlin/原版 v1 一致: blend=1)
     hb = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
     writer.write_frame(_PillowFrame(hb), delay_num=10, delay_den=100, blend=1)
+    if keep_meta:
+        writer.write_extra_chunks(meta_chunks_bytes(build_meta_chunks_png(src_path)))
     return writer.finish()
 
 
@@ -166,7 +230,9 @@ def disguise_static(src_path: str, cover_path: str | None = None,
 # ---------------------------------------------------------------------------
 
 def disguise_gif(src_path: str, cover_path: str | None = None,
-                 cover_image: Image.Image | None = None) -> bytes:
+                 cover_image: Image.Image | None = None,
+                 bg_color: tuple | None = None, transparent: bool = False,
+                 keep_meta: bool = False) -> bytes:
     img = _load_image(src_path)
     w, h = img.size
     n_frames = getattr(img, "n_frames", 1)
@@ -191,9 +257,12 @@ def disguise_gif(src_path: str, cover_path: str | None = None,
 
     writer = apng_codec.ApngWriter(w, h, animation_frames=len(frames), play_count=loop,
                                    content_kind="ANIMATED", content_frame_count=len(frames))
-    writer.write_default(_PillowFrame(cover_image if cover_image is not None else make_cover(w, h, cover_path)))
+    cover = cover_image if cover_image is not None else make_cover(w, h, cover_path, bg_color=bg_color, transparent=transparent)
+    writer.write_default(_PillowFrame(cover))
     for i, fr in enumerate(frames):
         writer.write_frame(_PillowFrame(fr), delay_num=delays[i], delay_den=100)
+    if keep_meta:
+        writer.write_extra_chunks(meta_chunks_bytes(build_meta_chunks_png(src_path)))
     return writer.finish()
 
 
@@ -202,12 +271,31 @@ def disguise_gif(src_path: str, cover_path: str | None = None,
 # ---------------------------------------------------------------------------
 
 def process_file(src_path: str, cover_path: str | None = None,
-                 cover_image: Image.Image | None = None) -> bytes:
+                 cover_image: Image.Image | None = None,
+                 bg_color: tuple | None = None, transparent: bool = False,
+                 keep_meta: bool = False) -> bytes:
     """按类型伪装:静态/GIF。cover_image 优先于 cover_path。返回伪装 APNG bytes。"""
+    # 防御:伪装 APNG 输入会把封面默认帧当原图(错误),必须拒绝
+    with Path(src_path).open("rb") as fh:
+        head = fh.read(8)
+    if head.startswith(bytes([0x89]) + b"PNG"):
+        with Path(src_path).open("rb") as fh:
+            fh.seek(8)
+            while True:
+                hdr = fh.read(8)
+                if len(hdr) < 8:
+                    break
+                length = int.from_bytes(hdr[:4], "big")
+                ctype = hdr[4:8]
+                if ctype == b"acTL":
+                    raise ImageError("该文件已是伪装图/APNG 动画,请先还原再重新伪装")
+                if ctype == b"IDAT":
+                    break
+                fh.seek(length + 4, 1)
     ext = Path(src_path).suffix.lower()
     if ext == ".gif" or _is_gif(src_path):
-        return disguise_gif(src_path, cover_path, cover_image)
-    return disguise_static(src_path, cover_path, cover_image)
+        return disguise_gif(src_path, cover_path, cover_image, bg_color, transparent, keep_meta)
+    return disguise_static(src_path, cover_path, cover_image, bg_color, transparent, keep_meta)
 
 
 def restore_file(src_path: str) -> bytes:

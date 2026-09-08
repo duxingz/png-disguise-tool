@@ -188,7 +188,12 @@ const state = {
   curIdx: -1,       // 当前预览项
   showResult: false, // 预览显示结果(伪装封面)还是原图
   importSeq: 0,     // 导入顺序计数(角标用,删除不复用)
-  selSet: new Set()  // 多选删除:选中的队列序号
+  selSet: new Set(), // 多选删除:选中的队列序号
+  coverBg: localStorage.getItem('pngDisguise_coverBg') || '#2563EB',
+  coverTransparent: localStorage.getItem('pngDisguise_coverTransparent') === '1',
+  keepMeta: localStorage.getItem('pngDisguise_keepMeta') === '1',
+  brushSize: +(localStorage.getItem('pngDisguise_brushSize') || 24),
+  brushType: localStorage.getItem('pngDisguise_brushType') || 'mosaic'
 };
 let COVER_B64 = '/*__COVER_B64__*/';
 const coverImg = new Image();
@@ -436,8 +441,34 @@ async function disguiseOne(it) {
     const cover = await currentCoverFrame(frame.width, frame.height, badge);
     it._coverPreview = cover.dataUrl; // 封面快照(预览用)
     it.thumb = cover.dataUrl;
+    // 可选:保留原图元数据(PNG 的 tEXt/iTXt/eXIf/zTXt;JPEG 的 APP1 Exif→eXIf)
+    let extraChunks = [];
+    if (state.keepMeta) {
+      try {
+        const raw = new Uint8Array(await it.file.arrayBuffer());
+        if (raw[0] === 0x89 && raw[1] === 0x50) {
+          const cs = parseChunks(raw);
+          if (cs) for (const c of cs) {
+            if (['tEXt', 'iTXt', 'zTXt', 'eXIf'].includes(c.type)) extraChunks.push({ type: c.type, data: c.payload });
+          }
+        } else if (raw[0] === 0xFF && raw[1] === 0xD8) {
+          let pos = 2;
+          while (pos + 4 <= raw.length) {
+            const marker = raw.slice(pos, pos + 2);
+            const len = (raw[pos + 2] << 8) | raw[pos + 3];
+            const seg = raw.slice(pos + 4, pos + 2 + len);
+            if (marker[0] === 0xFF && marker[1] === 0xE1 && seg[0] === 0x45 && seg[1] === 0x78 && seg[2] === 0x69 && seg[3] === 0x66) {
+              extraChunks.push({ type: 'eXIf', data: seg });
+              break;
+            }
+            pos += 2 + len;
+            if (marker[0] === 0xFF && marker[1] === 0xDA) break;
+          }
+        }
+      } catch (e) { /* 元数据提取失败不阻断伪装 */ }
+    }
     let png;
-    png = await buildDisguise(frame.width, frame.height, cover.frame, [frame], { contentKind: 'STATIC', contentFrameCount: 1, playCount: 0 });
+    png = await buildDisguise(frame.width, frame.height, cover.frame, [frame], { contentKind: 'STATIC', contentFrameCount: 1, playCount: 0, extraChunks });
     it.result = new Blob([png], { type: 'image/png' });
     it.status = 'done';
     it._showAsResult = true; // 结果是伪装图
@@ -462,8 +493,12 @@ async function restoreOne(it) {
       src = new Uint8Array(await it.file.arrayBuffer());
     }
     const restored = await restoreDisguise(src);
-    it.thumb = await makeThumb(new Blob([restored], { type: 'image/png' }));
-    it.result = new Blob([restored], { type: 'image/png' });
+    const restoredBlob = new Blob([restored], { type: 'image/png' });
+    it.thumb = await makeThumb(restoredBlob);
+    // 关键:还原 = 产生新原图,替换 file 使后续 伪装/下载 基于真图(所见即所得)
+    it.file = restoredBlob;
+    it.name = it.name.replace(/\.[^.]+$/, '') + '_还原.png';
+    it.result = restoredBlob;
     it.status = 'done';
     it._isDisguise = false;
     it._showAsResult = false; // 结果是真图
@@ -496,9 +531,13 @@ async function currentCoverFrame(w, h, badgeNum) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  // 蓝底
-  ctx.fillStyle = 'rgb(37,99,235)';
-  ctx.fillRect(0, 0, w, h);
+  // 背景:透明 或 用户设置的背景色(默认蓝)
+  if (state.coverTransparent) {
+    ctx.clearRect(0, 0, w, h);
+  } else {
+    try { ctx.fillStyle = state.coverBg; } catch (e) { ctx.fillStyle = 'rgb(37,99,235)'; }
+    ctx.fillRect(0, 0, w, h);
+  }
   // 封面图 contain(等比缩小完整居中)
   const src = window._customCover || coverImg;
   if (src.complete && src.naturalWidth) {
@@ -594,10 +633,12 @@ $('btnRestore').onclick = () => { const it = state.queue[state.curIdx]; if (it) 
 $('btnDownload').onclick = () => {
   const it = state.queue[state.curIdx];
   if (!it) return;
-  const blob = (state.showResult && it.result) ? it.result : it.file;
+  // 优先下载处理结果(还原结果/伪装文件/打码图);从未处理过才下载原件
+  const blob = it.result ? it.result : it.file;
   const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
-  downloadBlob(blob, state.showResult ? base + '_伪装.png' : base + '.png');
-  setStatus(state.showResult
+  const isDisguise = it._showAsResult === true;
+  downloadBlob(blob, isDisguise ? base + '_伪装.png' : base + '.png');
+  setStatus(it._showAsResult === true
     ? '已下载伪装文件 → 发送时请以「文件」方式发到 QQ(图片消息会被 QQ 压缩丢动画;手机发图可尝试勾选「原图」),对方保存后拖回本工具即可还原'
     : '已下载');
 };
@@ -720,16 +761,27 @@ function openCoverSettings() {
   modal.innerHTML = `<div class="modal">
     <h3>封面设置</h3>
     <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
-      <div style="width:150px;height:150px;background:#f0f0f0;border:1px solid #ddd;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+      <div style="width:150px;height:150px;background:repeating-conic-gradient(#ddd 0 25%,#fff 0 50%) 0 0/16px 16px;border:1px solid #ddd;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden">
         <img id="covPrev" style="max-width:100%;max-height:100%">
       </div>
       <div style="flex:1;min-width:220px;font-size:13px;line-height:1.8;color:#555">
-        生成伪装图时,封面会<b>按伪装图片的尺寸等比缩放、完整居中(不裁剪)</b>,四周以蓝底补齐。
+        生成伪装图时,封面会<b>按伪装图片的尺寸等比缩放、完整居中(不裁剪)</b>,四周以背景色补齐。
         <div style="background:#fff7e6;border-left:4px solid #f59e0b;padding:6px 10px;margin-top:8px;border-radius:6px;color:#92600a">
           ⚠ 封面图<b>不需要太大</b>:过大的图片会被自动缩小到 512px 以内,太大还会拖慢处理速度。建议直接使用 512×512 左右的图片。
         </div>
       </div>
     </div>
+    <div class="brush-row" style="margin-top:4px">
+      <span style="font-size:13px">封面背景</span>
+      <input type="color" id="covColor" value="${state.coverBg}" style="width:52px;height:30px;border:none;background:none;cursor:pointer" ${state.coverTransparent ? 'disabled' : ''}>
+      <label style="font-size:13px;display:flex;align-items:center;gap:4px">
+        <input type="checkbox" id="covTrans" ${state.coverTransparent ? 'checked' : ''}> 透明(不补底)
+      </label>
+    </div>
+    <label style="font-size:13px;display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="covMeta" ${state.keepMeta ? 'checked' : ''}>
+      保留原图元数据(EXIF / NovelAI 提示词参数,默认去除)
+    </label>
     <div class="row" style="justify-content:flex-end">
       <button class="btn" id="covReset">恢复内置默认</button>
       <button class="btn primary" id="covPick">选择封面图片…</button>
@@ -833,7 +885,9 @@ function openMosaic(it) {
   const vctx = cv.getContext('2d');
   const off = document.createElement('canvas');   // 原图尺寸离屏图层(涂抹目标)
   const offCtx = off.getContext('2d', { willReadFrequently: true });
-  let tool = 'mosaic', brush = 24, panMode = false;
+  let tool = (state.brushType === 'black' || state.brushType === 'white') ? state.brushType : 'mosaic';
+  let brush = state.brushSize || 24;
+  let panMode = false;
   const view = { scale: 1, ox: 0, oy: 0 };
   const undos = [];
   let imgW = 1, imgH = 1;
@@ -1006,7 +1060,12 @@ function openMosaic(it) {
       drawView();
     }
   });
-  modal.querySelector('#mbr').oninput = e => brush = +e.target.value;
+  modal.querySelector('#mbr').value = brush;
+  modal.querySelector('#mbr').oninput = e => { brush = +e.target.value; state.brushSize = brush; localStorage.setItem('pngDisguise_brushSize', String(brush)); };
+  modal.querySelectorAll('[data-tool]').forEach(b => { if (b.dataset.tool === tool) b.click(); });
+  const _saveBrush = () => { localStorage.setItem('pngDisguise_brushType', tool === 'pan' ? state.brushType : tool); };
+  modal.querySelector('#mCancel').addEventListener('click', _saveBrush);
+  modal.querySelector('#mOk').addEventListener('click', _saveBrush);
   window.addEventListener('resize', onWinResize);
   function onWinResize() { canvasSize(); clampPan(); drawView(); }
 

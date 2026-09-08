@@ -7,7 +7,7 @@ import shutil
 
 from PIL import Image
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QPixmap
 from pngdisguise import image_processor as ip
 from PySide6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog,
@@ -16,12 +16,16 @@ from PySide6.QtWidgets import (
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, parent, current_cover: str):
+    def __init__(self, parent, current_cover: str, bg_color: str = "#2563EB",
+                 transparent: bool = False, keep_meta: bool = False):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(420)
         self._current = current_cover
         self._selected = current_cover
+        self._bg_color = bg_color
+        self._transparent = transparent
+        self._keep_meta = keep_meta
 
         lay = QVBoxLayout(self)
         title = QLabel("伪装首帧封面")
@@ -36,6 +40,30 @@ class SettingsDialog(QDialog):
         warn.setStyleSheet("background:#fff7e6;border-left:4px solid #f59e0b;color:#92600a;padding:6px 10px;")
         warn.setWordWrap(True)
         lay.addWidget(warn)
+
+        # 背景色:色谱选择 + 透明开关
+        bg_row = QHBoxLayout()
+        bg_label = QLabel("封面背景")
+        bg_row.addWidget(bg_label)
+        from PySide6.QtWidgets import QColorDialog, QCheckBox
+        self.btn_color = QPushButton(self._bg_color)
+        self.btn_color.setFixedSize(70, 28)
+        self.btn_color.setCursor(Qt.PointingHandCursor)
+        self.btn_color.clicked.connect(self._pick_color)
+        self._update_color_btn()
+        bg_row.addWidget(self.btn_color)
+        self.chk_transparent = QCheckBox("透明(不补底)")
+        self.chk_transparent.setChecked(self._transparent)
+        self.chk_transparent.toggled.connect(lambda v: setattr(self, "_transparent", v))
+        bg_row.addWidget(self.chk_transparent)
+        bg_row.addStretch(1)
+        lay.addLayout(bg_row)
+
+        # 元数据开关:默认去除原图元数据,可选保留
+        self.chk_meta = QCheckBox("保留原图元数据(EXIF/NovelAI 参数,默认去除)")
+        self.chk_meta.setChecked(self._keep_meta)
+        self.chk_meta.toggled.connect(lambda v: setattr(self, "_keep_meta", v))
+        lay.addWidget(self.chk_meta)
 
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignCenter)
@@ -112,8 +140,32 @@ class SettingsDialog(QDialog):
         self._update_preview()
         self._update_path_label()
 
+    def _pick_color(self):
+        from PySide6.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(
+            QColor(self._bg_color), self, "选择封面背景色")
+        if color.isValid():
+            self._bg_color = color.name()          # "#rrggbb"
+            self._transparent = False              # 选了具体颜色即退出透明
+            self.chk_transparent.setChecked(False)
+            self._update_color_btn()
+
+    def _update_color_btn(self):
+        self.btn_color.setStyleSheet(
+            f"background:{self._bg_color}; border:1px solid #999; border-radius:4px;")
+        self.btn_color.setText("")
+
     def selected_cover(self) -> str:
         # 返回实际封面路径(为空=内置默认)
         if self._selected and os.path.isfile(self._selected):
             return self._selected
         return os.path.join(ip.resources_dir(), "default_cover.png")
+
+    def selected_bg(self) -> str:
+        return self._bg_color
+
+    def selected_transparent(self) -> bool:
+        return self._transparent
+
+    def selected_keep_meta(self) -> bool:
+        return self._keep_meta

@@ -49,12 +49,16 @@ class WorkThread(QThread):
     progressed = Signal(int, int)      # (done, total) 批量
 
     def __init__(self, sources: list[str], mode: str, badges: dict | None = None,
-                 cover_path: str | None = None, parent=None):
+                 cover_path: str | None = None, bg_color: str | None = None,
+                 transparent: bool = False, keep_meta: bool = False, parent=None):
         super().__init__(parent)
         self.sources = sources
         self.mode = mode  # "disguise" | "restore"
         self.badges = badges or {}     # source_path -> 导入序号(批量时画进封面)
         self.cover_path = cover_path
+        self.bg_color = bg_color
+        self.transparent = transparent
+        self.keep_meta = keep_meta
 
     def run(self):
         total = len(self.sources)
@@ -68,8 +72,15 @@ class WorkThread(QThread):
                         from PIL import Image as _Img
                         probe = _Img.open(src)
                         w, h = probe.size
-                        cover_image = ip.make_cover(w, h, self.cover_path, badge=badge)
-                    data = ip.process_file(src, cover_image=cover_image)
+                        bg = None
+                        if not self.transparent and self.bg_color:
+                            bg = tuple(int(self.bg_color[i:i+2], 16) for i in (1, 3, 5))
+                        cover_image = ip.make_cover(w, h, self.cover_path, badge=badge,
+                                                    bg_color=bg, transparent=self.transparent)
+                    data = ip.process_file(src, cover_image=cover_image,
+                                           bg_color=None if cover_image else None,
+                                           transparent=self.transparent and not cover_image,
+                                           keep_meta=self.keep_meta)
                 else:
                     data = ip.restore_file(src)
                 out = ip.save_temp(data)
@@ -203,6 +214,13 @@ class MainWindow(QMainWindow):
         self.cover_path = _default_cover_path()
         ip.DEFAULT_COVER_PATH = self.cover_path
 
+        # 设置记忆:背景色/透明/保留元数据/笔刷(大小+类型)
+        self.cover_bg = self._win_settings().value("coverBg") or "#2563EB"
+        self.cover_transparent = self._win_settings().value("coverTransparent", "0") == "1"
+        self.keep_meta = self._win_settings().value("keepMeta", "0") == "1"
+        self.brush_size = int(self._win_settings().value("brushSize", "24"))
+        self.brush_type = self._win_settings().value("brushType", "mosaic")
+
         # 状态
         self.queue: list[str] = []            # 待处理/处理中源图
         self.results: dict[str, str] = {}     # 源图路径 -> 结果路径
@@ -320,9 +338,13 @@ class MainWindow(QMainWindow):
         self.btn_copy.clicked.connect(self._copy_current)
         self.btn_export = QPushButton("导出到…")
         self.btn_export.clicked.connect(self._export_current)
+        self.btn_remove_one = QPushButton("移除图片")
+        self.btn_remove_one.setStyleSheet("font-size:15px;padding:8px 18px;")
+        self.btn_remove_one.clicked.connect(self._remove_current)
         sb.addWidget(self.btn_disguise)
         sb.addWidget(self.btn_restore)
         sb.addWidget(self.btn_mosaic)
+        sb.addWidget(self.btn_remove_one)
         sb.addStretch(1)
         sb.addWidget(self.btn_copy)
         sb.addWidget(self.btn_export)
@@ -490,11 +512,27 @@ class MainWindow(QMainWindow):
         p.setPen(QColor("white"))
         p.drawText(QRect(3, 3, bw, bh), Qt.AlignCenter, text)
         p.end()
+        # 缩略图容器(叠加右上角 × 删除按钮)
+        holder = QWidget()
+        holder.setStyleSheet("background:transparent;")
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
         img_label = QLabel()
         img_label.setPixmap(pix)
         img_label.setAlignment(Qt.AlignCenter)
         img_label.setStyleSheet("background:transparent;")
-        v.addWidget(img_label)
+        hl.addWidget(img_label)
+        btn_x = QPushButton("✕")
+        btn_x.setFixedSize(20, 20)
+        btn_x.setCursor(Qt.PointingHandCursor)
+        btn_x.setToolTip("删除这张")
+        btn_x.setStyleSheet(
+            "QPushButton { background:rgba(0,0,0,140); color:white; border:none;"
+            "border-radius:10px; font-size:11px; font-weight:bold; }"
+            "QPushButton:hover { background:#c62828; }")
+        btn_x.clicked.connect(lambda _=False, pp=path: self._remove_queue_paths([pp]))
+        hl.addWidget(btn_x, 0, Qt.AlignTop)
+        v.addWidget(holder)
 
         # 文件名(截断)
         fm = QFontMetrics(card.font())
@@ -553,6 +591,20 @@ class MainWindow(QMainWindow):
             self._remove_queue_paths(paths)
         elif act_clear is not None and chosen == act_clear:
             self._clear_queue()
+
+    def canvas_brush_size(self, dlg):
+        try:
+            return int(dlg.canvas.brush)
+        except Exception:
+            return 24
+
+    def canvas_brush_type(self, dlg):
+        return {0: "mosaic", 1: "black", 2: "white"}.get(dlg.canvas.mode, "mosaic")
+
+    def _remove_current(self):
+        """单图模式:移除当前图片(等同清空当前项)。"""
+        if self.current_source:
+            self._remove_queue_paths([self.current_source])
 
     def _remove_queue_paths(self, paths):
         """从队列删除指定路径(含结果/状态/当前项处理)。"""
@@ -747,12 +799,15 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ 动作
     def _disguise_current(self):
-        if not self.current_source:
+        # 所见即所得:伪装的永远是当前预览显示的图(还原后的真图/打码图/原件)
+        target = self._current_path or self.current_source
+        if not target or not os.path.isfile(target):
             return
-        # 若当前是伪装结果 → 已由还原按钮处理;这里只处理普通图伪装
-        if getattr(self, "_current_is_result", False) or self._looks_like_disguise(self._current_path):
+        if self._looks_like_disguise(target):
+            self.lbl_status.setText("当前是伪装文件,请先「还原真图」再伪装")
             return
-        self._run_worker([self.current_source], "disguise", single=True)
+        # 结果归属到队列源(缩略图/状态跟随)
+        self._run_worker([target], "disguise", single=True, result_owner=self.current_source)
 
     def _restore_current(self):
         if not self.current_source:
@@ -785,7 +840,10 @@ class MainWindow(QMainWindow):
         badges = {}
         if mode == "disguise" and len(self.queue) > 1:
             badges = {p: self.queue.index(p) + 1 for p in sources if p in self.queue}
-        self.worker = WorkThread(sources, mode, badges=badges, cover_path=self.cover_path)
+        self.worker = WorkThread(sources, mode, badges=badges, cover_path=self.cover_path,
+                                 bg_color=self.cover_bg if isinstance(self.cover_bg, str) else None,
+                                 transparent=self.cover_transparent,
+                                 keep_meta=self.keep_meta)
         self.worker.finished_ok.connect(lambda src, out, m=mode: self._on_one_done(src, out, m))
         self.worker.failed.connect(self._on_one_failed)
         self.worker.progressed.connect(self._on_progress)
@@ -917,8 +975,14 @@ class MainWindow(QMainWindow):
             return
         from .mosaic_dialog import MosaicDialog
         badge = self.queue.index(self.current_source) + 1 if len(self.queue) > 1 and self.current_source in self.queue else None
-        dlg = MosaicDialog(self, self.current_source, self.cover_path, badge=badge)
+        dlg = MosaicDialog(self, self.current_source, self.cover_path, badge=badge,
+                           brush_size=self.brush_size, brush_type=self.brush_type,
+                           bg_color=self.cover_bg if not self.cover_transparent else None)
         if dlg.exec() and dlg.result_path:
+            self.brush_size = self.canvas_brush_size(dlg)
+            self.brush_type = self.canvas_brush_type(dlg)
+            self._win_settings().setValue("brushSize", str(self.brush_size))
+            self._win_settings().setValue("brushType", self.brush_type)
             # 打码完成 → 结果作为当前图结果,预览替换
             out = dlg.result_path
             self.results[self.current_source] = out
@@ -930,9 +994,21 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         from .settings_dialog import SettingsDialog
-        dlg = SettingsDialog(self, self.cover_path)
+        dlg = SettingsDialog(self, self.cover_path,
+                             bg_color=(self.cover_bg if isinstance(self.cover_bg, str) else "#2563EB"),
+                             transparent=self.cover_transparent,
+                             keep_meta=self.keep_meta)
         if dlg.exec():
             self.cover_path = dlg.selected_cover()
+            self.cover_bg = dlg.selected_bg()
+            self.cover_transparent = dlg.selected_transparent()
+            self.keep_meta = dlg.selected_keep_meta()
+            # 全部持久化
+            st = self._win_settings()
+            st.setValue("coverBg", self.cover_bg)
+            st.setValue("coverTransparent", "1" if self.cover_transparent else "0")
+            st.setValue("keepMeta", "1" if self.keep_meta else "0")
+            st.setValue("appVersion", "1.0.0")  # 版本号记录在设置存储里
             ip.DEFAULT_COVER_PATH = self.cover_path
 
     # ------------------------------------------------------------ 清空
