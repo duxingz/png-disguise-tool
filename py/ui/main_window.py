@@ -65,21 +65,17 @@ class WorkThread(QThread):
         for i, src in enumerate(self.sources):
             try:
                 if self.mode == "disguise":
-                    cover_image = None
+                    # 封面始终用设置的背景色/透明构建(单张无序号,批量带序号)
+                    from PIL import Image as _Img
+                    probe = _Img.open(src)
+                    w, h = probe.size
                     badge = self.badges.get(src)
-                    if badge:
-                        # 先解码真图尺寸,构建带序号的封面
-                        from PIL import Image as _Img
-                        probe = _Img.open(src)
-                        w, h = probe.size
-                        bg = None
-                        if not self.transparent and self.bg_color:
-                            bg = tuple(int(self.bg_color[i:i+2], 16) for i in (1, 3, 5))
-                        cover_image = ip.make_cover(w, h, self.cover_path, badge=badge,
-                                                    bg_color=bg, transparent=self.transparent)
+                    bg = None
+                    if not self.transparent and self.bg_color:
+                        bg = tuple(int(self.bg_color[i:i+2], 16) for i in (1, 3, 5))
+                    cover_image = ip.make_cover(w, h, self.cover_path, badge=badge,
+                                                bg_color=bg, transparent=self.transparent)
                     data = ip.process_file(src, cover_image=cover_image,
-                                           bg_color=None if cover_image else None,
-                                           transparent=self.transparent and not cover_image,
                                            keep_meta=self.keep_meta)
                 else:
                     data = ip.restore_file(src)
@@ -977,7 +973,7 @@ class MainWindow(QMainWindow):
         badge = self.queue.index(self.current_source) + 1 if len(self.queue) > 1 and self.current_source in self.queue else None
         dlg = MosaicDialog(self, self.current_source, self.cover_path, badge=badge,
                            brush_size=self.brush_size, brush_type=self.brush_type,
-                           bg_color=self.cover_bg if not self.cover_transparent else None)
+                           bg_color=self.cover_bg, transparent=self.cover_transparent)
         if dlg.exec() and dlg.result_path:
             self.brush_size = self.canvas_brush_size(dlg)
             self.brush_type = self.canvas_brush_type(dlg)

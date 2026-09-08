@@ -188,12 +188,15 @@ class MosaicCanvas(QWidget):
 
 
 class MosaicDialog(QDialog):
-    def __init__(self, parent, img_path: str, cover_path: str, badge: int | None = None):
+    def __init__(self, parent, img_path: str, cover_path: str, badge: int | None = None,
+                 bg_color: str = "#2563EB", transparent: bool = False):
         super().__init__(parent)
         self.setWindowTitle("打码编辑")
         self.resize(720, 620)
         self.cover_path = cover_path
         self.badge = badge  # 批量时画进封面的导入序号
+        self.bg_color = bg_color
+        self.transparent = transparent
         self.result_path: str | None = None
 
         lay = QVBoxLayout(self)
@@ -263,13 +266,20 @@ class MosaicDialog(QDialog):
             from PIL import Image as _Img
             with _Img.open(png) as probe:
                 w, h = probe.size
-            cover = ip.make_cover(w, h, self.cover_path, badge=self.badge)
+            cover = ip.make_cover(w, h, self.cover_path, badge=self.badge,
+                                  bg_color=self._hex_to_rgb(self.bg_color),
+                                  transparent=self.transparent)
             data = ip.disguise_static(png, cover_image=cover)
             self.result_path = ip.save_temp(data)
             os.remove(png)
             self.accept()
         except Exception as e:
             QMessageBox.warning(self, "伪装失败", str(e))
+
+    @staticmethod
+    def _hex_to_rgb(hexstr):
+        hexstr = (hexstr or "#2563EB").lstrip("#")
+        return tuple(int(hexstr[i:i+2], 16) for i in (0, 2, 4))
 
     def _write_temp_png(self):
         import tempfile
