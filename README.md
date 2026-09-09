@@ -33,7 +33,8 @@
 
 ## 🔧 伪装格式（与原 ChatChatBar 双向兼容）
 
-- 结构：`IHDR → acTL → tEXt("ChatBarApngDisguise") → IDAT(封面) → fcTL+fdAT(真图) [+1×1保活帧 blend=1] → IEND`
+- 结构：`IHDR → acTL → tEXt("ChatBarApngDisguise") → IDAT(封面) → fcTL+fdAT(真图·翻转帧) → fcTL+fdAT(真图·干净帧) → IEND`（静态为双真图帧，防解码器判静态；兼容读取旧版 [真图, 1×1保活帧] 结构）
+- 元数据：伪装与还原都会**彻底清除**元数据与 NovelAI alpha 通道隐写（提示词读不出来）；设置里可选"保留元数据"
 - 限制：单帧 ≤800 万像素；输出 ≤100MB
 
 ## 📁 仓库结构
