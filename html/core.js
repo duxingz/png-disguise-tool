@@ -1,6 +1,6 @@
 // PNG/APNG 伪装核心(浏览器环境,纯 JS,无依赖)
 // 契约与 Kotlin/Python 版一致(与原 ChatChatBar 兼容):
-//   IHDR→acTL→tEXt("ChatBarApngDisguise\0ver;STATIC|ANIMATED;count")→IDAT(封面)→fcTL+fdAT(真图)[+保活帧]→IEND
+//   IHDR→acTL→tEXt("ChatBarApngDisguise\0ver;STATIC|ANIMATED;count")→IDAT(封面)→fcTL+fdAT(真图 nudged)→fcTL+fdAT(真图 clean,静态)→IEND
 // 像素行:RGBA,滤波 0/1/2/4(启发式最小和)。封面=蓝底 + 完整图等比缩小居中(contain)。
 'use strict';
 
@@ -84,8 +84,60 @@ function filterRows(width, height, getRow) {
   return concatBytes(out);
 }
 
-// ---------- Deflate(zlib 包装,流式;fallback 同步) ----------
-// PNG 的 IDAT/fdAT 需要 zlib 流(头 + deflate + adler32)。CompressionStream 的
+// ---------- 像素级元数据/隐写清理(与 Python strip_metadata_img 一致,幂等) ----------
+// NovelAI V3 把提示词隐写在 alpha 通道低位,且恰好写在 255↔254 这类不透明像素上
+// (bit=1→255、bit=0→254),必须对**全部**像素清 alpha LSB(255→254、半透明取偶);
+// 只清非 255 像素会原样保留隐写位型,NovelAI 照读。全透明像素 RGB→透明白。
+function stripRGBAInPlace(px) {
+  for (let i = 0; i < px.length; i += 4) {
+    const a = px[i + 3] & 0xFE;
+    px[i + 3] = a;
+    if (a === 0) { px[i] = 255; px[i + 1] = 255; px[i + 2] = 255; }
+  }
+}
+// frame 的 getRowRGBA 返回底层缓冲视图(canvas 帧均为 subarray),就地清理即生效
+function stripFrame(fr) {
+  if (fr._data) { stripRGBAInPlace(fr._data); return fr; }
+  for (let y = 0; y < fr.height; y++) stripRGBAInPlace(fr.getRowRGBA(y));
+  return fr;
+}
+function cloneFrame(fr) {
+  const rows = [];
+  for (let y = 0; y < fr.height; y++) rows.push(new Uint8Array(fr.getRowRGBA(y)));
+  return { width: fr.width, height: fr.height, _rows: rows,
+    getRowRGBA(y) { return this._rows[y]; } };
+}
+
+// ---------- PNG 反滤波(还原清理用;支持全部 5 种滤波) ----------
+function unfilterRGBA(raw, width, height) {
+  const stride = width * 4, bpp = 4, rowLen = stride + 1;
+  const out = new Uint8Array(height * stride);
+  for (let y = 0; y < height; y++) {
+    const f = raw[y * rowLen];
+    const src = y * rowLen + 1, dst = y * stride;
+    const row = out.subarray(dst, dst + stride);
+    const up = y > 0 ? out.subarray(dst - stride, dst) : null;
+    for (let i = 0; i < stride; i++) {
+      const x = raw[src + i];
+      const a = i >= bpp ? row[i - bpp] : 0;
+      const b = up ? up[i] : 0;
+      const c = (i >= bpp && up) ? up[i - bpp] : 0;
+      let v;
+      if (f === 0) v = x;
+      else if (f === 1) v = x + a;
+      else if (f === 2) v = x + b;
+      else if (f === 3) v = x + ((a + b) >> 1);
+      else { // Paeth
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        v = x + ((pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c));
+      }
+      row[i] = v & 0xFF;
+    }
+  }
+  return out;
+}
+
+// ---------- Deflate(zlib 包装,流式;fallback 同步) ----------// PNG 的 IDAT/fdAT 需要 zlib 流(头 + deflate + adler32)。CompressionStream 的
 // 'deflate' 格式即 zlib 包装,直接可用;'deflate-raw' 是裸 deflate(无头),勿用。
 async function deflateRaw(bytes) {
   if (typeof CompressionStream !== 'undefined') {
@@ -138,6 +190,8 @@ function syncDeflateStored(bytes) {
 // frame: { width, height, getRowRGBA(y) -> Uint8Array }
 async function buildDisguise(width, height, coverFrame, truthFrames, opts) {
   // opts: { playCount, contentKind: 'STATIC'|'ANIMATED', contentFrameCount }
+  // 封面先清隐写(透明封面直接用原图像素);静态真图同样清理
+  stripFrame(coverFrame);
   const chunks = [PNG_SIG];
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
@@ -182,11 +236,13 @@ async function buildDisguise(width, height, coverFrame, truthFrames, opts) {
   };
 
   if (opts.contentKind === 'STATIC') {
-    // 真图帧(全画布,dispose=0 blend=0)
-    await writeFrameData(truthFrames[0], 10, 100, 0, 0, width, height);
-    // 保活帧 1x1(blend=1,与原版 v1 一致)
-    const hb = { width: 1, height: 1, getRowRGBA: () => new Uint8Array(4) };
-    await writeFrameData(hb, 10, 100, 0, 1, 1, 1);
+    // 真图清隐写后写双真图帧 [nudged, clean](v4.0 手法:两帧强制差 1 像素,
+    // 防解码器判静态;还原取 clean 帧),取代 1x1 保活帧
+    const clean = stripFrame(truthFrames[0]);
+    const nudge = cloneFrame(clean);
+    nudge.getRowRGBA(0)[0] = (nudge.getRowRGBA(0)[0] + 1) & 0xFF;
+    await writeFrameData(nudge, 10, 100, 0, 0, width, height);
+    await writeFrameData(clean, 10, 100, 0, 0, width, height);
   } else {
     for (let i = 0; i < truthFrames.length; i++) {
       const f = truthFrames[i];
@@ -197,8 +253,24 @@ async function buildDisguise(width, height, coverFrame, truthFrames, opts) {
   for (const mc of (opts.extraChunks || [])) {
     chunks.push(chunk(mc.type, mc.data));
   }
-  chunks.push(chunk('IEND', new Uint8Array(0)));
-  return concatBytes(chunks);
+  // 保留元数据模式:直接输出(含伪装必需块 + 有意保留的元数据块)
+  if (opts.keepMeta) {
+    chunks.push(chunk('IEND', new Uint8Array(0)));
+    return concatBytes(chunks);
+  }
+  // 强保证:剥离任何非白名单块(元数据等),仅保留伪装必需块
+  const ALLOW = new Set(['IHDR', 'acTL', 'IDAT', 'fcTL', 'fdAT', 'IEND']);
+  const kept = chunks.filter((c, i) => {
+    if (i === 0) return true;              // PNG 签名块始终保留
+    const t = String.fromCharCode(c[4], c[5], c[6], c[7]);
+    if (t === 'IEND') return false;        // 末尾统一重加
+    if (t === 'tEXt') {
+      return new TextDecoder().decode(c.slice(8, -4)).startsWith(MARKER_KEYWORD);
+    }
+    return ALLOW.has(t);
+  });
+  kept.push(chunk('IEND', new Uint8Array(0)));
+  return concatBytes(kept);
 }
 
 // ---------- 伪装检测/还原 ----------
@@ -244,8 +316,10 @@ function inspectDisguise(data) {
 }
 
 async function inflateRaw(bytes) {
+  // PNG 的 IDAT/fdAT 载荷是 zlib 包装流(RFC1950,头+deflate+adler32),与
+  // deflateRaw 对应也用 'deflate' 格式;'deflate-raw' 是裸 deflate(RFC1951),勿用
   if (typeof DecompressionStream !== 'undefined') {
-    const ds = new DecompressionStream('deflate-raw');
+    const ds = new DecompressionStream('deflate');
     const stream = new Blob([bytes]).stream().pipeThrough(ds);
     const buf = await new Response(stream).arrayBuffer();
     return new Uint8Array(buf);
@@ -259,6 +333,7 @@ async function restoreDisguise(data) {
     throw new Error('不是可还原的伪装 APNG');
   }
   const chunks = info.chunks;
+  const width = info.width, height = info.height;
   const out = [PNG_SIG];
   let ihdr = null;
   for (const c of chunks) if (c.type === 'IHDR') { ihdr = c.payload; break; }
@@ -294,9 +369,26 @@ async function restoreDisguise(data) {
       }
     }
   } else {
-    // 静态:真图数据 → IDAT,输出普通 PNG
-    const comp = concatBytes(groups[0].datas);
-    out.push(chunk('IDAT', comp));
+    // 静态:取"与画布同尺寸"的最后一组真图帧。
+    // 双真图帧 [nudged, clean](本工具/v4.0)→ 取 clean;原版结构 [真图, 1x1 保活] → 过滤保活帧
+    let sel = groups.filter(g => {
+      const fv = new DataView(g.fctl.buffer, g.fctl.byteOffset);
+      return fv.getUint32(4) === width && fv.getUint32(8) === height;
+    });
+    if (sel.length === 0) sel = [groups[groups.length - 1]];
+    const comp = concatBytes(sel[sel.length - 1].datas);
+    // 像素级隐写清理(与 Python restore_file 一致):8bit RGBA 非隔行才解压
+    // 清理(alpha LSB 全清 + 全透明透白);异常结构原样字节输出
+    if (ihdr.length >= 13 && ihdr[8] === 8 && ihdr[9] === 6 && ihdr[12] === 0) {
+      const raw = await inflateRaw(comp);
+      const rgba = unfilterRGBA(raw, width, height);
+      stripRGBAInPlace(rgba);
+      const filtered = filterRows(width, height,
+        y => rgba.subarray(y * width * 4, (y + 1) * width * 4));
+      out.push(chunk('IDAT', await deflateRaw(filtered)));
+    } else {
+      out.push(chunk('IDAT', comp));
+    }
   }
   out.push(chunk('IEND', new Uint8Array(0)));
   return concatBytes(out);
@@ -345,5 +437,5 @@ function makeCoverFrame(coverFrame, canvasW, canvasH) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildDisguise, restoreDisguise, inspectDisguise, makeCoverFrame, filterRows, deflateRaw, PNG_SIG, chunk };
+  module.exports = { buildDisguise, restoreDisguise, inspectDisguise, makeCoverFrame, filterRows, deflateRaw, unfilterRGBA, stripRGBAInPlace, stripFrame, cloneFrame, PNG_SIG, chunk, parseChunks, MARKER_KEYWORD };
 }

@@ -468,7 +468,7 @@ async function disguiseOne(it) {
       } catch (e) { /* 元数据提取失败不阻断伪装 */ }
     }
     let png;
-    png = await buildDisguise(frame.width, frame.height, cover.frame, [frame], { contentKind: 'STATIC', contentFrameCount: 1, playCount: 0, extraChunks });
+    png = await buildDisguise(frame.width, frame.height, cover.frame, [frame], { contentKind: 'STATIC', contentFrameCount: 1, playCount: 0, keepMeta: state.keepMeta, extraChunks });
     it.result = new Blob([png], { type: 'image/png' });
     it.status = 'done';
     it._showAsResult = true; // 结果是伪装图
