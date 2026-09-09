@@ -7,7 +7,9 @@ APNG 伪装编解码核心(纯 Python,复刻 Kotlin 版已验证格式)。
 
 格式契约(与原 ChatChatBar 兼容):
     IHDR → acTL → tEXt("ChatBarApngDisguise\\0version;STATIC|ANIMATED;count")
-    → IDAT×N(封面) → fcTL+fdAT(真图帧) [+1x1 保活帧(静态)] → IEND
+    → IDAT×N(封面) → fcTL+fdAT(真图帧 nudged) → fcTL+fdAT(真图帧 clean,静态) → IEND
+    静态双真图帧为 v4.0 手法:两帧强制差 1 像素防解码器判静态;原版 v1 的
+    [真图, 1x1 保活帧] 结构同样兼容读取。
 """
 import struct
 import zlib
@@ -57,6 +59,32 @@ def _parse_chunks(data: bytes):
 # ---------------------------------------------------------------------------
 # 像素编码(把 RGBA 行编码为 PNG 滤波行)
 # ---------------------------------------------------------------------------
+
+def sanitize_apng(data: bytes, marker_keyword: bytes) -> bytes:
+    """白名单重组:仅保留伪装必需的块(IHDR/acTL/标记tEXt/IDAT/fcTL/fdAT/IEND),
+    其余任何块(eXIf/iTXt/zTXt/其他 tEXt 等)全部剥离。keep_meta=False 时的强保证。"""
+    if not data.startswith(bytes([0x89]) + b"PNG"):
+        return data
+    out = bytearray()
+    out += data[:8]  # 签名
+    pos = 8
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos:pos+4], "big")
+        ctype = data[pos+4:pos+8]
+        payload = data[pos+8:pos+8+length]
+        keep = ctype in (b"IHDR", b"acTL", b"fcTL", b"fdAT", b"IDAT", b"IEND")
+        if ctype == b"tEXt":
+            # 仅保留伪装标记本身
+            keep = payload.startswith(marker_keyword + bytes([0])) if False else payload.startswith(marker_keyword + bytes([0]))
+        if keep:
+            crc = zlib.crc32(ctype)
+            crc = zlib.crc32(payload, crc)
+            out += data[pos:pos+8] + payload + (crc & 0xFFFFFFFF).to_bytes(4, "big")
+        pos += 12 + length
+        if ctype == b"IEND":
+            break
+    return bytes(out)
+
 
 def _filter_rows(width, height, get_row_rgba):
     """None 滤波直写(每行前缀 0x00 + 原始 RGBA 字节)。
@@ -219,8 +247,15 @@ def restore_disguise(data: bytes):
                     seq += 1
         out += _chunk_bytes(b"IEND", b"")
     else:
-        # 静态:只取第一组真图帧数据,作 IDAT 输出普通 PNG
-        first_fctl, fdat_pieces = frame_groups[0]
+        # 静态:取"与画布同尺寸"的最后一组真图帧。
+        # 双真图帧结构 [nudged, clean](本工具/v4.0)→ 取 clean,避免还原出
+        # 角像素 +1 的 nudged 帧;原版结构 [真图, 1x1 保活帧] → 过滤保活帧。
+        w, h = struct.unpack(">II", ihdr[:8])
+        cand = [g for g in frame_groups
+                if struct.unpack(">II", g[0][4:12]) == (w, h)]
+        if not cand:
+            cand = [frame_groups[-1]]
+        _fctl, fdat_pieces = cand[-1]
         for piece in fdat_pieces:
             out += _chunk_bytes(b"IDAT", piece)
         out += _chunk_bytes(b"IEND", b"")

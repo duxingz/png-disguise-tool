@@ -48,6 +48,28 @@ class ImageError(Exception):
     pass
 
 
+def strip_metadata_img(img: Image.Image) -> Image.Image:
+    """清除元数据与隐写(对齐 v4.0 strip_metadata):
+    - NovelAI V3 把提示词隐写在 alpha 通道低位,且恰好写在 255↔254 这类
+      不透明像素上(bit=1→255、bit=0→254),所以必须对**全部**像素清 alpha LSB
+      (255→254、半透明取偶)。只清非 255 像素会原样保留隐写位型,NovelAI 照读。
+    - 完全透明像素的 RGB 改"透明白",避免被看成黑底;半透明/不透明像素 RGB 不动
+    - 清空 info 字典 → EXIF/ICC/提示词 tEXt 全部丢弃
+    幂等设计:对本函数输出重复处理结果不变(伪装↔还原循环零漂移)。"""
+    rgba = img.convert("RGBA")
+    r, g, b, a = rgba.split()
+    a = a.point(lambda v: v & 0xFE)              # 全部像素清 LSB(隐写位)
+    # 仅全透明像素 RGB→白;不透明/半透明 RGB 不动 → 幂等,循环零漂移
+    mask = a.point(lambda v: 255 if v == 0 else 0)
+    white = Image.new("L", rgba.size, 255)
+    r = Image.composite(white, r, mask)
+    g = Image.composite(white, g, mask)
+    b = Image.composite(white, b, mask)
+    clean = Image.merge("RGBA", (r, g, b, a))
+    clean.info = {}
+    return clean
+
+
 # ---------------------------------------------------------------------------
 # Pillow 帧 → codec 需要的行访问器
 # ---------------------------------------------------------------------------
@@ -212,17 +234,26 @@ def disguise_static(src_path: str, cover_path: str | None = None,
     w, h = img.size
     _validate(w, h, 1)
     cover = cover_image if cover_image is not None else make_cover(w, h, cover_path, bg_color=bg_color, transparent=transparent)
+    cover = strip_metadata_img(cover)  # 封面同样清隐写(透明封面直接用原图像素)
 
     writer = apng_codec.ApngWriter(w, h, animation_frames=2, play_count=0,
                                    content_kind="STATIC", content_frame_count=1)
     writer.write_default(_PillowFrame(cover))
-    writer.write_frame(_PillowFrame(img), delay_num=10, delay_den=100)
-    # 保活帧 1x1(与 Kotlin/原版 v1 一致: blend=1)
-    hb = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-    writer.write_frame(_PillowFrame(hb), delay_num=10, delay_den=100, blend=1)
+    # 真图先清元数据/隐写(v4.0 strip_metadata 等价),再 nudged 一份(R 通道翻 1bit)
+    clean = strip_metadata_img(img)
+    nudge = clean.copy()
+    nudge_px = nudge.load()
+    r0, g0, b0, a0 = nudge_px[0, 0]
+    nudge_px[0, 0] = ((r0 + 1) & 0xFF, g0, b0, a0)   # 角翻 1bit:强制两帧不同,解码器走动画
+    writer.write_frame(_PillowFrame(nudge), delay_num=10, delay_den=100)
+    writer.write_frame(_PillowFrame(clean), delay_num=10, delay_den=100)
     if keep_meta:
         writer.write_extra_chunks(meta_chunks_bytes(build_meta_chunks_png(src_path)))
-    return writer.finish()
+    result = writer.finish()
+    # 强保证:未开启保留时,白名单重组剥离任何非必需块(元数据绝不出现在输出)
+    if not keep_meta:
+        result = apng_codec.sanitize_apng(result, apng_codec.MARKER_KEYWORD)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +289,17 @@ def disguise_gif(src_path: str, cover_path: str | None = None,
     writer = apng_codec.ApngWriter(w, h, animation_frames=len(frames), play_count=loop,
                                    content_kind="ANIMATED", content_frame_count=len(frames))
     cover = cover_image if cover_image is not None else make_cover(w, h, cover_path, bg_color=bg_color, transparent=transparent)
+    cover = strip_metadata_img(cover)  # 封面同样清隐写(透明封面直接用原图像素)
     writer.write_default(_PillowFrame(cover))
+    # GIF 帧不清隐写:GIF 无 8 位 alpha 通道,不可能携带 NovelAI alpha 隐写
     for i, fr in enumerate(frames):
         writer.write_frame(_PillowFrame(fr), delay_num=delays[i], delay_den=100)
     if keep_meta:
         writer.write_extra_chunks(meta_chunks_bytes(build_meta_chunks_png(src_path)))
-    return writer.finish()
+    result = writer.finish()
+    if not keep_meta:
+        result = apng_codec.sanitize_apng(result, apng_codec.MARKER_KEYWORD)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +335,22 @@ def process_file(src_path: str, cover_path: str | None = None,
 
 
 def restore_file(src_path: str) -> bytes:
-    """还原伪装 APNG → 普通 PNG/APNG bytes。"""
+    """还原伪装 APNG → 普通 PNG/APNG bytes。
+    静态还原额外做像素级清理(对齐 v4.0 restore_real 的 strip_metadata(real)):
+    清 alpha LSB 隐写 + 全透明像素透白 —— 别人工具伪装的文件,真图帧像素里
+    可能带着 NovelAI alpha 隐写,不做这步还原后 NovelAI 仍能读出提示词。"""
     data = Path(src_path).read_bytes()
-    return apng_codec.restore_disguise(data)
+    out = apng_codec.restore_disguise(data)
+    info = apng_codec.inspect_disguise(data)
+    if info and info["meta"]["kind"] == "STATIC":
+        try:
+            im = Image.open(io.BytesIO(out))
+            buf = io.BytesIO()
+            strip_metadata_img(im).save(buf, "PNG")
+            out = buf.getvalue()
+        except Exception:
+            pass  # 清理失败(异常结构)时退回纯字节重组结果
+    return out
 
 
 def inspect_file(src_path: str) -> dict:
