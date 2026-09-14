@@ -1,6 +1,6 @@
 // PNG/APNG 伪装核心(浏览器环境,纯 JS,无依赖)
 // 契约与 Kotlin/Python 版一致(与原 ChatChatBar 兼容):
-//   IHDR→acTL→tEXt("ChatBarApngDisguise\0ver;STATIC|ANIMATED;count")→IDAT(封面)→fcTL+fdAT(真图 nudged)→fcTL+fdAT(真图 clean,静态)→IEND
+//   IHDR→acTL→tEXt("ChatBarApngDisguise\0ver;STATIC|ANIMATED;count")→IDAT(封面)→fcTL+fdAT(真图)→fcTL+fdAT(1×1保活帧,静态)→IEND
 // 像素行:RGBA,滤波 0/1/2/4(启发式最小和)。封面=蓝底 + 完整图等比缩小居中(contain)。
 'use strict';
 
@@ -100,12 +100,6 @@ function stripFrame(fr) {
   if (fr._data) { stripRGBAInPlace(fr._data); return fr; }
   for (let y = 0; y < fr.height; y++) stripRGBAInPlace(fr.getRowRGBA(y));
   return fr;
-}
-function cloneFrame(fr) {
-  const rows = [];
-  for (let y = 0; y < fr.height; y++) rows.push(new Uint8Array(fr.getRowRGBA(y)));
-  return { width: fr.width, height: fr.height, _rows: rows,
-    getRowRGBA(y) { return this._rows[y]; } };
 }
 
 // ---------- PNG 反滤波(还原清理用;支持全部 5 种滤波) ----------
@@ -236,13 +230,12 @@ async function buildDisguise(width, height, coverFrame, truthFrames, opts) {
   };
 
   if (opts.contentKind === 'STATIC') {
-    // 真图清隐写后写双真图帧 [nudged, clean](v4.0 手法:两帧强制差 1 像素,
-    // 防解码器判静态;还原取 clean 帧),取代 1x1 保活帧
+    // 真图只存一份(清隐写后),第二帧 = 1×1 全透明保活帧(blend=1,合成时画面不变);
+    // 两帧内容不同 → 解码器按动画处理,而真图不存两份(与 exe 端一致,省 ~35%)
     const clean = stripFrame(truthFrames[0]);
-    const nudge = cloneFrame(clean);
-    nudge.getRowRGBA(0)[0] = (nudge.getRowRGBA(0)[0] + 1) & 0xFF;
-    await writeFrameData(nudge, 10, 100, 0, 0, width, height);
     await writeFrameData(clean, 10, 100, 0, 0, width, height);
+    const hb = { width: 1, height: 1, getRowRGBA: () => new Uint8Array(4) };
+    await writeFrameData(hb, 10, 100, 0, 1, 1, 1);
   } else {
     for (let i = 0; i < truthFrames.length; i++) {
       const f = truthFrames[i];
@@ -370,7 +363,7 @@ async function restoreDisguise(data) {
     }
   } else {
     // 静态:取"与画布同尺寸"的最后一组真图帧。
-    // 双真图帧 [nudged, clean](本工具/v4.0)→ 取 clean;原版结构 [真图, 1x1 保活] → 过滤保活帧
+    // 本工具/原版结构 [真图, 1x1 保活] → 过滤保活帧;v4.0 双真图帧 [nudged, clean] → 取 clean
     let sel = groups.filter(g => {
       const fv = new DataView(g.fctl.buffer, g.fctl.byteOffset);
       return fv.getUint32(4) === width && fv.getUint32(8) === height;
@@ -437,5 +430,5 @@ function makeCoverFrame(coverFrame, canvasW, canvasH) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildDisguise, restoreDisguise, inspectDisguise, makeCoverFrame, filterRows, deflateRaw, unfilterRGBA, stripRGBAInPlace, stripFrame, cloneFrame, PNG_SIG, chunk, parseChunks, MARKER_KEYWORD };
+  module.exports = { buildDisguise, restoreDisguise, inspectDisguise, makeCoverFrame, filterRows, deflateRaw, unfilterRGBA, stripRGBAInPlace, stripFrame, PNG_SIG, chunk, parseChunks, MARKER_KEYWORD };
 }
