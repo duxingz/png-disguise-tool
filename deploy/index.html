@@ -179,7 +179,7 @@
 <script>
 // PNG/APNG 伪装核心(浏览器环境,纯 JS,无依赖)
 // 契约与 Kotlin/Python 版一致(与原 ChatChatBar 兼容):
-//   IHDR→acTL→tEXt("ChatBarApngDisguise\0ver;STATIC|ANIMATED;count")→IDAT(封面)→fcTL+fdAT(真图 nudged)→fcTL+fdAT(真图 clean,静态)→IEND
+//   IHDR→acTL→tEXt("ChatBarApngDisguise\0ver;STATIC|ANIMATED;count")→IDAT(封面)→fcTL+fdAT(真图)→fcTL+fdAT(1×1保活帧,静态)→IEND
 // 像素行:RGBA,滤波 0/1/2/4(启发式最小和)。封面=蓝底 + 完整图等比缩小居中(contain)。
 'use strict';
 
@@ -279,12 +279,6 @@ function stripFrame(fr) {
   if (fr._data) { stripRGBAInPlace(fr._data); return fr; }
   for (let y = 0; y < fr.height; y++) stripRGBAInPlace(fr.getRowRGBA(y));
   return fr;
-}
-function cloneFrame(fr) {
-  const rows = [];
-  for (let y = 0; y < fr.height; y++) rows.push(new Uint8Array(fr.getRowRGBA(y)));
-  return { width: fr.width, height: fr.height, _rows: rows,
-    getRowRGBA(y) { return this._rows[y]; } };
 }
 
 // ---------- PNG 反滤波(还原清理用;支持全部 5 种滤波) ----------
@@ -415,13 +409,12 @@ async function buildDisguise(width, height, coverFrame, truthFrames, opts) {
   };
 
   if (opts.contentKind === 'STATIC') {
-    // 真图清隐写后写双真图帧 [nudged, clean](v4.0 手法:两帧强制差 1 像素,
-    // 防解码器判静态;还原取 clean 帧),取代 1x1 保活帧
+    // 真图只存一份(清隐写后),第二帧 = 1×1 全透明保活帧(blend=1,合成时画面不变);
+    // 两帧内容不同 → 解码器按动画处理,而真图不存两份(与 exe 端一致,省 ~35%)
     const clean = stripFrame(truthFrames[0]);
-    const nudge = cloneFrame(clean);
-    nudge.getRowRGBA(0)[0] = (nudge.getRowRGBA(0)[0] + 1) & 0xFF;
-    await writeFrameData(nudge, 10, 100, 0, 0, width, height);
     await writeFrameData(clean, 10, 100, 0, 0, width, height);
+    const hb = { width: 1, height: 1, getRowRGBA: () => new Uint8Array(4) };
+    await writeFrameData(hb, 10, 100, 0, 1, 1, 1);
   } else {
     for (let i = 0; i < truthFrames.length; i++) {
       const f = truthFrames[i];
@@ -549,7 +542,7 @@ async function restoreDisguise(data) {
     }
   } else {
     // 静态:取"与画布同尺寸"的最后一组真图帧。
-    // 双真图帧 [nudged, clean](本工具/v4.0)→ 取 clean;原版结构 [真图, 1x1 保活] → 过滤保活帧
+    // 本工具/原版结构 [真图, 1x1 保活] → 过滤保活帧;v4.0 双真图帧 [nudged, clean] → 取 clean
     let sel = groups.filter(g => {
       const fv = new DataView(g.fctl.buffer, g.fctl.byteOffset);
       return fv.getUint32(4) === width && fv.getUint32(8) === height;
@@ -616,7 +609,7 @@ function makeCoverFrame(coverFrame, canvasW, canvasH) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildDisguise, restoreDisguise, inspectDisguise, makeCoverFrame, filterRows, deflateRaw, unfilterRGBA, stripRGBAInPlace, stripFrame, cloneFrame, PNG_SIG, chunk, parseChunks, MARKER_KEYWORD };
+  module.exports = { buildDisguise, restoreDisguise, inspectDisguise, makeCoverFrame, filterRows, deflateRaw, unfilterRGBA, stripRGBAInPlace, stripFrame, PNG_SIG, chunk, parseChunks, MARKER_KEYWORD };
 }
 
 </script>
@@ -675,20 +668,52 @@ async function blobToFrame(blob) {
   bmp.close();
   return frame;
 }
-// GIF 解码(纯 JS 简化版,逐帧合成为全画布)
+// GIF 动态取帧:用浏览器内置 ImageDecoder(Chrome/Edge 94+ / Safari 16.4+ / Firefox 130+)
+// 它直接给出**已合成好**的每一帧(disposal 由浏览器处理)与每帧时长,不用自己写 GIF 解析。
+// 返回 {frames, loop} 或 null(单帧/不该走动画) 或 {note} (失败原因,调用方退回静态并提示)。
+const GIF_MAX_FRAME_PIXELS = 8000000;    // 单帧上限(与 exe 一致)
+const GIF_MAX_TOTAL_PIXELS = 60000000;   // 总像素上限:浏览器要把所有帧读成 ImageData,
+                                         // 比 exe(3 亿)保守,避免手机浏览器内存爆掉
 async function decodeGifFrames(blob) {
-  // 用 createImageBitmap 无 GIF 帧支持;需内置解析。简化:先尝试 Image 元素(支持动图但只取当前帧)
-  // 完整 GIF 解码器较大;这里用最小实现:读出所有帧用 <img> 的 currentTime 不可行。
-  // —— 方案:HTML 版 GIF 动态伪装依赖内置解码;暂用 ImageDecoder API(Chrome 支持 animated)
-  if (typeof ImageDecoder !== 'undefined') {
-    const dec = new ImageDecoder({ data: await blob.arrayBuffer(), type: 'image/gif' });
+  if (typeof ImageDecoder === 'undefined') return { note: 'unsupported' };
+  let dec = null;
+  try {
+    dec = new ImageDecoder({ data: await blob.arrayBuffer(), type: 'image/gif' });
+    await dec.tracks.ready;      // 轨道信息就绪后 selectedTrack 才可访问
+    await dec.completed;
+    const track = dec.tracks.selectedTrack;
+    const n = (track && track.frameCount) || 0;
+    if (n <= 1) { dec.close(); return null; }        // 单帧交给静态路径
+    // repetitionCount:有限次数用其值,Infinity(无限循环)→ APNG 的 0
+    const rep = track.repetitionCount;
+    const loop = (typeof rep === 'number' && isFinite(rep)) ? rep : 0;
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d', { willReadFrequently: true });
     const frames = [];
-    for (let i = 0; i < dec.tracks.selectedTrack.frameCount; i++) {
-      const r = await dec.decode({ frameIndex: i });
-      const f = await blobToFrame(new Blob([r.image], { type: 'image/png' })); // 不行,image 是 VideoFrame
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      const { image } = await dec.decode({ frameIndex: i });
+      const w = image.displayWidth, h = image.displayHeight;
+      if (!w || !h || w * h > GIF_MAX_FRAME_PIXELS || (total += w * h) > GIF_MAX_TOTAL_PIXELS) {
+        image.close(); dec.close(); return { note: 'toobig' };
+      }
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      ctx.clearRect(0, 0, w, h);                     // 每帧独立合成(透明区保持透明)
+      ctx.drawImage(image, 0, 0);
+      const id = ctx.getImageData(0, 0, w, h);
+      const delayCs = Math.max(1, Math.round((image.duration || 100000) / 10000)); // µs → 1/100s
+      image.close();
+      frames.push({ width: w, height: h, _data: id.data, delayNum: delayCs,
+        getRowRGBA(y) { return id.data.subarray(y * w * 4, (y + 1) * w * 4); } });
     }
+    dec.close();
+    // 尺寸必须一致(ImageDecoder 一般会给同一逻辑尺寸;异常就退回静态)
+    for (const f of frames) if (f.width !== frames[0].width || f.height !== frames[0].height) return { note: 'error' };
+    return frames.length > 1 ? { frames, loop } : null;
+  } catch (e) {
+    try { if (dec) dec.close(); } catch (e2) { /* ignore */ }
+    return { note: 'error' };
   }
-  throw new Error('GIF 支持需额外解码器');
 }
 
 // ---------- 队列 ----------
@@ -861,7 +886,8 @@ function updateButtons() {
   $('btnDisguise').classList.toggle('hidden', has && isDisguise);
   $('btnRestore').classList.toggle('hidden', !(has && isDisguise));
   $('btnMosaic').disabled = !(has && !isDisguise);
-  $('btnDownload').disabled = !(has && ((state.showResult && it.result) || it.status === 'done' || it._isDisguise));
+  // 可下载的情形:正在显示处理结果 / 已处理完 / 拖入的伪装文件 / 刚打完码的图
+  $('btnDownload').disabled = !(has && ((state.showResult && it.result) || it.status === 'done' || it._isDisguise || it._mosaicDone));
   const pending = state.queue.filter(x => x.status === 'pending' || x.status === 'failed').length;
   $('btnAll').disabled = !pending;
   const itCur = state.queue[state.curIdx];
@@ -876,9 +902,33 @@ function updateButtons() {
 async function disguiseOne(it) {
   it.status = 'processing'; refreshQueue();
   try {
-    const frame = await blobToFrame(it.file);
     // 批量(队列>1)时把导入序号画进封面左上角
     const badge = state.queue.length > 1 ? it.seq : null;
+    // GIF → 逐帧取帧做动态伪装(浏览器不支持 ImageDecoder 时退回静态首帧并说明原因)
+    let gif = null, gifNote = '';
+    if (/\.gif$/i.test(it.name) || it.file.type === 'image/gif') {
+      try { gif = await decodeGifFrames(it.file); } catch (e) { gif = { note: 'error' }; }
+      if (gif && gif.note) {
+        gifNote = gif.note === 'unsupported' ? ' · 此浏览器不支持 GIF 取帧,已按首帧静态伪装'
+          : gif.note === 'toobig' ? ' · GIF 帧数或尺寸过大,已按首帧静态伪装'
+            : ' · GIF 解码失败,已按首帧静态伪装';
+        gif = null;
+      }
+    }
+    let frame = null, frames, kind, playCount, frameCount;
+    if (gif && gif.frames) {
+      frames = gif.frames;
+      frame = frames[0];
+      kind = 'ANIMATED';
+      playCount = gif.loop;
+      frameCount = frames.length;
+    } else {
+      frame = await blobToFrame(it.file);
+      frames = [frame];
+      kind = 'STATIC';
+      playCount = 0;
+      frameCount = 1;
+    }
     const cover = await currentCoverFrame(frame.width, frame.height, badge);
     it._coverPreview = cover.dataUrl; // 封面快照(预览用)
     it.thumb = cover.dataUrl;
@@ -909,12 +959,15 @@ async function disguiseOne(it) {
       } catch (e) { /* 元数据提取失败不阻断伪装 */ }
     }
     let png;
-    png = await buildDisguise(frame.width, frame.height, cover.frame, [frame], { contentKind: 'STATIC', contentFrameCount: 1, playCount: 0, keepMeta: state.keepMeta, extraChunks });
+    png = await buildDisguise(frame.width, frame.height, cover.frame, frames, { contentKind: kind, contentFrameCount: frameCount, playCount, keepMeta: state.keepMeta, extraChunks });
     it.result = new Blob([png], { type: 'image/png' });
     it.status = 'done';
     it._showAsResult = true; // 结果是伪装图
     state.showResult = true;
-    setStatus('伪装完成:点「下载」保存后发到 QQ(作为文件发送,完整保留)' + (badge ? ` · 封面序号 ${badge}` : ''));
+    setStatus('伪装完成:点「下载」保存后发到 QQ(作为文件发送,完整保留)'
+      + (kind === 'ANIMATED' ? ` · GIF ${frameCount} 帧动画` : '')
+      + gifNote
+      + (badge ? ` · 封面序号 ${badge}` : ''));
   } catch (e) {
     it.status = 'failed';
     setStatus('伪装失败: ' + e.message);
@@ -1523,10 +1576,11 @@ function openMosaic(it) {
       it2.result = null;               // 清掉旧结果(伪装图),避免混淆
       it2._isDisguise = false;
       it2._showAsResult = false;
+      it2._mosaicDone = true;          // 打码图本身也可「下载」保存(所见即所得)
       state.showResult = false;
       state.importSeq = state.importSeq; // 序号保持
       makeThumb(blob).then(t => { it2.thumb = t; refreshQueue(); });
-      setStatus('打码完成:当前图已替换为打码后的图,可「APNG伪装」或「下载」');
+      setStatus('打码完成:可「下载」保存这张打码图,或点「APNG伪装」把它伪装后发送');
       refreshQueue(); showCurrent();
     }, 'image/png');
   };
