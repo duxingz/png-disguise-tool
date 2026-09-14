@@ -34,3 +34,6 @@ png伪装工具-分享版.zip
 
 # Gradle 缓存
 .gradle/
+
+# 回退备份(勿入库)
+*.bak-*
