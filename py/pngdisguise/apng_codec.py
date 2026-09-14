@@ -104,13 +104,24 @@ def _filter_rows(width, height, get_row_rgba):
 # 伪装写入
 # ---------------------------------------------------------------------------
 
+def _default_compress(width: int, height: int, get_row_rgba) -> bytes:
+    """默认帧压缩:None 滤波直写 + zlib6(纯 Python,不依赖 Pillow)。"""
+    return zlib.compress(bytes(_filter_rows(width, height, get_row_rgba)), 6)
+
+
 class ApngWriter:
-    """流式写伪装 APNG。frame 提供 (width,height,get_row_rgba(y))。"""
+    """流式写伪装 APNG。frame 提供 (width,height,get_row_rgba(y))。
+
+    compress: 可选的帧压缩函数 (w, h, get_row_rgba) -> zlib 流。默认 None 滤波直写;
+    调用方可传入 C 实现(如 Pillow)以取得自适应滤波的更小体积。
+    """
 
     def __init__(self, width: int, height: int, animation_frames: int,
-                 play_count: int, content_kind: str, content_frame_count: int):
+                 play_count: int, content_kind: str, content_frame_count: int,
+                 compress=None):
         self.w = width
         self.h = height
+        self._compress = compress or _default_compress
         self.declared = animation_frames
         self.written = 0
         self.chunks = bytearray()
@@ -125,11 +136,7 @@ class ApngWriter:
 
     def _write_image_data(self, frame, is_default: bool):
         fw, fh = frame.width, frame.height
-        raw_rows = bytearray()
-        def get_row(y):
-            return frame.get_row_rgba(y)
-        raw_rows += _filter_rows(fw, fh, get_row)
-        comp = zlib.compress(bytes(raw_rows), 6)
+        comp = self._compress(fw, fh, frame.get_row_rgba)
         # 分块写(64KB)
         DATA = 64 * 1024
         for i in range(0, len(comp), DATA):

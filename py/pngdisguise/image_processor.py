@@ -89,6 +89,23 @@ class _PillowFrame:
         return self._buf[s:s + self._stride]
 
 
+def _pillow_frame_compress(width: int, height: int, get_row_rgba) -> bytes:
+    """用 Pillow 的 C 编码器压缩一帧,返回 IDAT/fdAT 需要的 zlib 流。
+
+    fdAT 里放任何合法滤波的 zlib 流都可被解码器还原,格式契约不变。
+    实测:比原来的 None 直写小 ~20% 且更快(6MP 帧 1519KB/142ms → 1210KB/95ms)。
+    曾试过自己用 Pillow 算子做逐行自适应滤波(None/Sub/Up),但实测真实图片反而
+    比 Pillow 默认大 0~3%(Pillow 内部还会用 Paeth/Average),故不采用。"""
+    rows = bytearray()
+    for y in range(height):
+        rows += get_row_rgba(y)
+    img = Image.frombytes("RGBA", (width, height), bytes(rows))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")  # 默认档:自适应滤波(含 Paeth) + zlib6
+    return b"".join(p for t, p in apng_codec._parse_chunks(buf.getvalue())
+                    if t == b"IDAT")
+
+
 def _load_image(path: str) -> Image.Image:
     try:
         return Image.open(path)
@@ -233,20 +250,20 @@ def disguise_static(src_path: str, cover_path: str | None = None,
     img = _load_image(src_path)
     w, h = img.size
     _validate(w, h, 1)
-    cover = cover_image if cover_image is not None else make_cover(w, h, cover_path, bg_color=bg_color, transparent=transparent)
+    cover = cover_image if cover_image is not None else make_cover(
+        w, h, cover_path, bg_color=bg_color, transparent=transparent)
     cover = strip_metadata_img(cover)  # 封面同样清隐写(透明封面直接用原图像素)
 
     writer = apng_codec.ApngWriter(w, h, animation_frames=2, play_count=0,
-                                   content_kind="STATIC", content_frame_count=1)
+                                   content_kind="STATIC", content_frame_count=1,
+                                   compress=_pillow_frame_compress)
     writer.write_default(_PillowFrame(cover))
-    # 真图先清元数据/隐写(v4.0 strip_metadata 等价),再 nudged 一份(R 通道翻 1bit)
-    clean = strip_metadata_img(img)
-    nudge = clean.copy()
-    nudge_px = nudge.load()
-    r0, g0, b0, a0 = nudge_px[0, 0]
-    nudge_px[0, 0] = ((r0 + 1) & 0xFF, g0, b0, a0)   # 角翻 1bit:强制两帧不同,解码器走动画
-    writer.write_frame(_PillowFrame(nudge), delay_num=10, delay_den=100)
-    writer.write_frame(_PillowFrame(clean), delay_num=10, delay_den=100)
+    # 真图只存一份(清元数据/隐写后),第二帧用 1×1 全透明保活帧(blend=1,合成时
+    # 画面不变)。两帧内容不同 → 解码器按动画处理,而真图不再存两份(原版结构,
+    # 比双真帧小 ~35%)。
+    writer.write_frame(_PillowFrame(strip_metadata_img(img)), delay_num=10, delay_den=100)
+    hb = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    writer.write_frame(_PillowFrame(hb), delay_num=10, delay_den=100, blend=1)
     if keep_meta:
         writer.write_extra_chunks(meta_chunks_bytes(build_meta_chunks_png(src_path)))
     result = writer.finish()
@@ -268,7 +285,8 @@ def disguise_gif(src_path: str, cover_path: str | None = None,
     w, h = img.size
     n_frames = getattr(img, "n_frames", 1)
     if n_frames <= 1:
-        return disguise_static(src_path, cover_path, cover_image)
+        return disguise_static(src_path, cover_path, cover_image,
+                               bg_color, transparent, keep_meta)
     _validate(w, h, n_frames)
 
     # 逐帧提取(合成为全画布 RGBA;Pillow 的 seek 会保留 dispose,逐帧 seek 即合成)
@@ -287,8 +305,10 @@ def disguise_gif(src_path: str, cover_path: str | None = None,
     loop = img.info.get("loop", 0)  # Pillow: 0=无限? 实际可能 None
 
     writer = apng_codec.ApngWriter(w, h, animation_frames=len(frames), play_count=loop,
-                                   content_kind="ANIMATED", content_frame_count=len(frames))
-    cover = cover_image if cover_image is not None else make_cover(w, h, cover_path, bg_color=bg_color, transparent=transparent)
+                                   content_kind="ANIMATED", content_frame_count=len(frames),
+                                   compress=_pillow_frame_compress)
+    cover = cover_image if cover_image is not None else make_cover(
+        w, h, cover_path, bg_color=bg_color, transparent=transparent)
     cover = strip_metadata_img(cover)  # 封面同样清隐写(透明封面直接用原图像素)
     writer.write_default(_PillowFrame(cover))
     # GIF 帧不清隐写:GIF 无 8 位 alpha 通道,不可能携带 NovelAI alpha 隐写
@@ -330,8 +350,10 @@ def process_file(src_path: str, cover_path: str | None = None,
                 fh.seek(length + 4, 1)
     ext = Path(src_path).suffix.lower()
     if ext == ".gif" or _is_gif(src_path):
-        return disguise_gif(src_path, cover_path, cover_image, bg_color, transparent, keep_meta)
-    return disguise_static(src_path, cover_path, cover_image, bg_color, transparent, keep_meta)
+        return disguise_gif(src_path, cover_path, cover_image, bg_color, transparent,
+                            keep_meta)
+    return disguise_static(src_path, cover_path, cover_image, bg_color, transparent,
+                           keep_meta)
 
 
 def restore_file(src_path: str) -> bytes:
