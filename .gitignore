@@ -37,3 +37,12 @@ png伪装工具-分享版.zip
 
 # 回退备份(勿入库)
 *.bak-*
+
+# 手机端工程:源码入库;以下本机文件/构建产物不入库
+android/local.properties
+android/.gradle/
+android/app/build/
+android/app/src/main/assets/index.html
+android/*.jks
+*.apk
+*.apk.bak
