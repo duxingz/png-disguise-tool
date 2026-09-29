@@ -1,0 +1,42 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.duxingz.pngdisguise'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.duxingz.pngdisguise"
+        minSdk 29            // Android 10+:用 MediaStore 保存/分享,无需任何存储权限
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('../pngdisguise.jks')
+            storePassword 'pngdisguise'
+            keyAlias 'pngdisguise'
+            keyPassword 'pngdisguise'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// 源码含中文,必须显式指定 UTF-8(Windows 默认编码是 GBK)
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
