@@ -44,6 +44,8 @@ public class MainActivity extends Activity {
 
     private String pendingName;
     private ByteArrayOutputStream pendingBuf;
+    private int pendingExpected;   // 预期 base64 总长(begin 时由网页给出)
+    private int pendingReceived;   // 实际收到的 base64 长度(end 时核对,防存坏文件)
     private final ArrayList<Uri> savedUris = new ArrayList<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable shareTask = new Runnable() {
@@ -180,6 +182,8 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void begin(String name, int totalBase64Length) {
             pendingName = (name == null || name.isEmpty()) ? "png伪装工具_输出.png" : name;
+            pendingExpected = Math.max(0, totalBase64Length);
+            pendingReceived = 0;
             pendingBuf = new ByteArrayOutputStream(Math.max(4096, totalBase64Length * 3 / 4));
         }
 
@@ -188,8 +192,9 @@ public class MainActivity extends Activity {
             if (pendingBuf == null || base64Chunk == null) return;
             try {
                 pendingBuf.write(Base64.decode(base64Chunk, Base64.DEFAULT));
+                pendingReceived += base64Chunk.length();
             } catch (Exception ignored) {
-                // 单个分块解码失败不影响其余部分
+                // 单个分块解码失败:end 时长度对不上会拒存,不给用户坏文件
             }
         }
 
@@ -197,9 +202,17 @@ public class MainActivity extends Activity {
         public void end() {
             final String name = pendingName;
             final byte[] bytes = (pendingBuf == null) ? null : pendingBuf.toByteArray();
+            final int expected = pendingExpected, received = pendingReceived;
             pendingName = null;
             pendingBuf = null;
+            pendingExpected = 0;
+            pendingReceived = 0;
             if (bytes == null || bytes.length == 0) return;
+            if (expected > 0 && received != expected) {
+                handler.post(() -> Toast.makeText(MainActivity.this,
+                        "传输不完整,文件未保存,请重试", Toast.LENGTH_LONG).show());
+                return;
+            }
             handler.post(new Runnable() {
                 @Override public void run() { saveToDownloads(name, bytes); }
             });
@@ -251,7 +264,9 @@ public class MainActivity extends Activity {
         Intent send;
         if (savedUris.size() == 1) {
             send = new Intent(Intent.ACTION_SEND);
-            send.setType("image/png");
+            // MIME 用保存时的实际类型:批量下载的 zip 是 application/zip,GIF/JPEG 也不是 png
+            String mime = getContentResolver().getType(savedUris.get(0));
+            send.setType(mime != null ? mime : "image/png");
             send.putExtra(Intent.EXTRA_STREAM, savedUris.get(0));
         } else {
             send = new Intent(Intent.ACTION_SEND_MULTIPLE);
