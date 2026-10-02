@@ -37,7 +37,7 @@
 ## 交付物与发布规则(重要)
 - `png伪装工具.exe`(项目根):PyInstaller 打包,**每次改 py/ 源码后必须重新打包并更新**
 - `png伪装工具.html`(项目根):**每次改 core.js/template.html 后必须重新 build 并更新**
-- `png伪装工具-分享版.zip`:对外分享包 = exe + html + 使用说明.txt + 测试图片;**exe 或 html 任何更新后必须同步重打**
+- `png伪装工具-分享版.zip`:对外分享包 = exe + html + **apk** + 使用说明.txt(**2026-10-02 起不再含测试图片**,用户指定);**exe/html/apk 任何更新后必须同步重打**
 - 打包命令:exe → `cd py && python -m PyInstaller PngDisguiseTool.spec --noconfirm`(spec 含版本元数据与 Qt 翻译);html → `cd html && python build.py`
 - exe 内部名必须 ASCII(PngDisguiseTool),拷贝成中文名用 Python(勿用 bash cp,会乱码)
 - **GitHub 更新规则(用户硬性要求):禁止主动 push/更新 GitHub(含代码/Release/资产)。只有用户明确说了才执行;可以提示用户"有更新可推送",但绝不自作主张**
