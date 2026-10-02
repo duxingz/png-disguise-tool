@@ -226,7 +226,7 @@ class MainWindow(QMainWindow):
         self.current_source: str | None = None  # 当前队列源(原始图)
         self._current_path: str | None = None   # 预览显示的实际文件(源/伪装结果/还原结果)
         self._current_is_result: bool = False   # 当前显示的是伪装结果(可原地还原)
-        self._last_badge: str | None = None     # 上一个防吞序号(跨轮也必不同)
+        self._last_badge: str | None = self._win_settings().value("lastBadge")  # 上一个防吞序号(持久化,跨重启不撞)
         self._badge_pool: list[str] = []        # 序号抽签池:洗牌 000~999,用尽重洗(轮内绝不重复)
         self._regen_badge: str | None = None    # 最近一次导出换号重伪装用的序号(状态栏展示)
         self._result_sources: dict[str, str] = {}  # 队列源 -> 伪装实际用的源图(打码结果=打码图)
@@ -241,7 +241,8 @@ class MainWindow(QMainWindow):
 
     def _next_badge(self) -> str:
         """防吞序号:000~999,加密强随机源洗牌抽签——同一轮内绝不重复、
-        跨轮(含上一轮最后一个)也必不同;1000 个用尽后重新洗牌开新轮。"""
+        跨轮(含上一轮最后一个)也必不同;1000 个用尽后重新洗牌开新轮。
+        上一个序号持久化,跨软件重启也不撞。"""
         if not self._badge_pool:
             self._badge_pool = [f"{i:03d}" for i in range(1000)]
             random.SystemRandom().shuffle(self._badge_pool)
@@ -249,6 +250,7 @@ class MainWindow(QMainWindow):
                 self._badge_pool[0], self._badge_pool[-1] = self._badge_pool[-1], self._badge_pool[0]
         b = self._badge_pool.pop()
         self._last_badge = b
+        self._win_settings().setValue("lastBadge", b)
         return b
 
     def closeEvent(self, event):
@@ -948,9 +950,9 @@ class MainWindow(QMainWindow):
         """防吞序号开启时,导出前用新随机序号重新伪装当前结果(所见即所得:
         预览/缩略图同步刷新为新导出)。返回新文件路径;不适用(关闭/无源/失败)
         返回 None,调用方退回原文件。"""
+        self._regen_badge = None   # 先清:开关关闭/不适用时状态栏不得残留旧序号
         if not self.anti_swallow:
             return None
-        self._regen_badge = None
         path = getattr(self, "_current_path", None)
         if not path or not os.path.isfile(path):
             return None
@@ -1035,6 +1037,7 @@ class MainWindow(QMainWindow):
             return
         import shutil
         count = 0
+        current_refreshed = False
         items = list(self.results.items())
         for n, (k, v) in enumerate(items):
             if not os.path.isfile(v):
@@ -1055,10 +1058,21 @@ class MainWindow(QMainWindow):
                 name = f"{idx:03d}_{Path(k).stem}" + (f"_{badge}" if badge else "") + "_伪装.png"
                 shutil.copyfile(v, os.path.join(d, name))
                 count += 1
+                if k == self.current_source:
+                    current_refreshed = True
             except Exception:
                 pass
         self.lbl_status.setText(f"已导出 {count} 张到 {d}" +
                                 ("(已逐张换号)" if self.anti_swallow and count else ""))
+        # 所见即所得:当前项若在导出中换了号,预览同步刷成最新导出的那份
+        if current_refreshed and self.current_source is not None:
+            self._current_path = self.results[self.current_source]
+            self._current_is_result = self._looks_like_disguise(self._current_path)
+            if self._current_is_result:
+                self._show_disguise_result(self._current_path)
+            else:
+                self._show_image(self._current_path)
+        self._refresh_queue_list()
 
     # ------------------------------------------------------------ 选择
     def _pick_files(self):

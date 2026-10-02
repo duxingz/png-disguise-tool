@@ -254,12 +254,17 @@ def restore_disguise(data: bytes):
                     seq += 1
         out += _chunk_bytes(b"IEND", b"")
     else:
-        # 静态:取"与画布同尺寸"的最后一组真图帧。
-        # 双真图帧结构 [nudged, clean](本工具/v4.0)→ 取 clean,避免还原出
-        # 角像素 +1 的 nudged 帧;原版结构 [真图, 1x1 保活帧] → 过滤保活帧。
+        # 静态:取"与画布同尺寸且 blend=0(真实内容帧)"的最后一组。
+        # 双真图帧 [nudged, clean](本工具/v4.0)→ 取 clean,避免还原出
+        # 角像素 +1 的 nudged 帧;原版结构 [真图, 1x1 保活帧] → 过滤保活帧;
+        # 1×1 画布特例:保活帧与真图同尺寸,靠 blend=1 识别排除
+        # (blend 恒为:内容帧 0 / 保活帧 1)。
         w, h = struct.unpack(">II", ihdr[:8])
         cand = [g for g in frame_groups
-                if struct.unpack(">II", g[0][4:12]) == (w, h)]
+                if struct.unpack(">II", g[0][4:12]) == (w, h) and g[0][25] == 0]
+        if not cand:
+            cand = [g for g in frame_groups
+                    if struct.unpack(">II", g[0][4:12]) == (w, h)]
         if not cand:
             cand = [frame_groups[-1]]
         _fctl, fdat_pieces = cand[-1]
