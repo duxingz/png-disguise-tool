@@ -626,6 +626,8 @@ const state = {
   coverBg: localStorage.getItem('pngDisguise_coverBg') || '#2563EB',
   coverTransparent: localStorage.getItem('pngDisguise_coverTransparent') === '1',
   keepMeta: localStorage.getItem('pngDisguise_keepMeta') === '1',
+  antiSwallow: localStorage.getItem('pngDisguise_antiSwallow') !== '0', // 防吞序号默认开
+  lastBadge: null,  // 上一次使用的随机序号(连导不重复)
   brushSize: +(localStorage.getItem('pngDisguise_brushSize') || 24),
   brushType: localStorage.getItem('pngDisguise_brushType') || 'mosaic'
 };
@@ -899,11 +901,21 @@ function updateButtons() {
 }
 
 // ---------- 伪装/还原 ----------
+// 防吞序号:000~999 随机(含前导零),连续使用不重复;每次伪装/导出换一个
+function nextBadge() {
+  let n;
+  do { n = String(Math.floor(Math.random() * 1000)).padStart(3, '0'); } while (n === state.lastBadge);
+  state.lastBadge = n;
+  return n;
+}
+
 async function disguiseOne(it) {
   it.status = 'processing'; refreshQueue();
   try {
-    // 批量(队列>1)时把导入序号画进封面左上角
-    const badge = state.queue.length > 1 ? it.seq : null;
+    // 防吞序号(可开关):开启时每次伪装都随机 000~999,关闭时保留旧行为(批量=导入序号,单张=无)
+    const badge = state.antiSwallow ? nextBadge()
+      : (state.queue.length > 1 ? it.seq : null);
+    it._lastBadge = badge;
     // GIF → 逐帧取帧做动态伪装(浏览器不支持 ImageDecoder 时退回静态首帧并说明原因)
     let gif = null, gifNote = '';
     if (/\.gif$/i.test(it.name) || it.file.type === 'image/gif') {
@@ -1124,16 +1136,21 @@ $('btnAdd').onclick = () => $('fileInput').click();
 $('fileInput').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
 $('btnDisguise').onclick = () => { const it = state.queue[state.curIdx]; if (it) disguiseOne(it); };
 $('btnRestore').onclick = () => { const it = state.queue[state.curIdx]; if (it) restoreOne(it); };
-$('btnDownload').onclick = () => {
+$('btnDownload').onclick = async () => {
   const it = state.queue[state.curIdx];
   if (!it) return;
+  // 防吞序号:下载伪装结果前换新随机序号重新伪装(所见即所得,预览同步刷新)
+  if (state.antiSwallow && it._showAsResult === true && it.file) {
+    await disguiseOne(it);
+  }
   // 优先下载处理结果(还原结果/伪装文件/打码图);从未处理过才下载原件
   const blob = it.result ? it.result : it.file;
   const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
   const isDisguise = it._showAsResult === true;
-  downloadBlob(blob, isDisguise ? base + '_伪装.png' : base + '.png');
+  const badgePart = isDisguise && it._lastBadge ? `_${it._lastBadge}` : '';
+  downloadBlob(blob, isDisguise ? base + badgePart + '_伪装.png' : base + '.png');
   setStatus(it._showAsResult === true
-    ? '已下载伪装文件 → 发送时请以「文件」方式发到 QQ(图片消息会被 QQ 压缩丢动画;手机发图可尝试勾选「原图」),对方保存后拖回本工具即可还原'
+    ? `已下载伪装文件${it._lastBadge ? `(封面序号 ${it._lastBadge})` : ''} → 发送时请以「文件」方式发到 QQ(图片消息会被 QQ 压缩丢动画;手机发图可尝试勾选「原图」),对方保存后拖回本工具即可还原`
     : '已下载');
 };
 $('btnAll').onclick = disguiseAll;
@@ -1276,6 +1293,10 @@ function openCoverSettings() {
       <input type="checkbox" id="covMeta" ${state.keepMeta ? 'checked' : ''}>
       保留原图元数据(EXIF / NovelAI 提示词参数,默认去除)
     </label>
+    <label style="font-size:13px;display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="covAnti" ${state.antiSwallow ? 'checked' : ''}>
+      防吞序号:每次伪装/下载随机换号 000~999(防 QQ 吞重复图,推荐开启)
+    </label>
     <div class="row" style="justify-content:flex-end">
       <button class="btn" id="covReset">恢复内置默认</button>
       <button class="btn primary" id="covPick">选择封面图片…</button>
@@ -1288,6 +1309,33 @@ function openCoverSettings() {
 
   const prev = modal.querySelector('#covPrev');
   prev.src = currentCoverSrc();
+
+  // 封面设置即时保存(此前三个控件没有绑定,改动会被静默丢弃——已修)
+  const saveBg = v => { state.coverBg = v; localStorage.setItem('pngDisguise_coverBg', v); };
+  modal.querySelector('#covColor').oninput = e => {
+    saveBg(e.target.value);
+    if (state.coverTransparent) {   // 选了具体颜色即退出透明
+      state.coverTransparent = false;
+      localStorage.setItem('pngDisguise_coverTransparent', '0');
+      modal.querySelector('#covTrans').checked = false;
+      e.target.disabled = false;
+    }
+  };
+  modal.querySelector('#covTrans').onchange = e => {
+    state.coverTransparent = e.target.checked;
+    localStorage.setItem('pngDisguise_coverTransparent', e.target.checked ? '1' : '0');
+    modal.querySelector('#covColor').disabled = e.target.checked;
+  };
+  modal.querySelector('#covMeta').onchange = e => {
+    state.keepMeta = e.target.checked;
+    localStorage.setItem('pngDisguise_keepMeta', e.target.checked ? '1' : '0');
+  };
+  modal.querySelector('#covAnti').onchange = e => {
+    state.antiSwallow = e.target.checked;
+    localStorage.setItem('pngDisguise_antiSwallow', e.target.checked ? '1' : '0');
+    setStatus(e.target.checked ? '防吞序号已开启:每次伪装/下载随机换号 000~999'
+                               : '防吞序号已关闭:恢复原序号行为');
+  };
 
   modal.querySelector('#covPick').onclick = () => $('coverInput').click();
   modal.querySelector('#covReset').onclick = () => {
