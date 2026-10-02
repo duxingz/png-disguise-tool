@@ -193,7 +193,7 @@ const state = {
   coverTransparent: localStorage.getItem('pngDisguise_coverTransparent') === '1',
   keepMeta: localStorage.getItem('pngDisguise_keepMeta') === '1',
   antiSwallow: localStorage.getItem('pngDisguise_antiSwallow') === '1', // 防吞序号网页端默认关(exe 默认开)
-  lastBadge: null,  // 上一次使用的随机序号(连导不重复)
+  lastBadge: localStorage.getItem('pngDisguise_lastBadge') || null,  // 上一个防吞序号(持久化,跨会话不撞)
   brushSize: +(localStorage.getItem('pngDisguise_brushSize') || 24),
   brushType: localStorage.getItem('pngDisguise_brushType') || 'mosaic'
 };
@@ -489,6 +489,7 @@ function nextBadge() {
   }
   const n = _badgePool.pop();
   state.lastBadge = n;
+  localStorage.setItem('pngDisguise_lastBadge', n);
   return n;
 }
 
@@ -498,7 +499,7 @@ async function disguiseOne(it) {
     // 防吞序号(可开关):开启时每次伪装都随机 000~999,关闭时保留旧行为(批量=导入序号,单张=无)
     const badge = state.antiSwallow ? nextBadge()
       : (state.queue.length > 1 ? it.seq : null);
-    it._lastBadge = badge;
+    it._lastBadge = state.antiSwallow ? badge : null;  // 文件名只认防吞序号,导入序号不进名字
     // GIF → 逐帧取帧做动态伪装(浏览器不支持 ImageDecoder 时退回静态首帧并说明原因)
     let gif = null, gifNote = '';
     if (/\.gif$/i.test(it.name) || it.file.type === 'image/gif') {

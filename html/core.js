@@ -362,13 +362,15 @@ async function restoreDisguise(data) {
       }
     }
   } else {
-    // 静态:取"与画布同尺寸"的最后一组真图帧。
-    // 本工具/原版结构 [真图, 1x1 保活] → 过滤保活帧;v4.0 双真图帧 [nudged, clean] → 取 clean
-    let sel = groups.filter(g => {
+    // 静态:取"与画布同尺寸且 blend=0(真实内容帧)"的最后一组真图帧。
+    // 本工具/原版结构 [真图, 1x1 保活] → 过滤保活帧;v4.0 双真图帧 [nudged, clean] → 取 clean;
+    // 1×1 画布特例:保活帧与真图同尺寸,靠 blend=1 识别排除(与 Python restore 一致)
+    const sameSize = groups.filter(g => {
       const fv = new DataView(g.fctl.buffer, g.fctl.byteOffset);
       return fv.getUint32(4) === width && fv.getUint32(8) === height;
     });
-    if (sel.length === 0) sel = [groups[groups.length - 1]];
+    let sel = sameSize.filter(g => g.fctl[25] === 0);
+    if (sel.length === 0) sel = sameSize.length ? sameSize : [groups[groups.length - 1]];
     const comp = concatBytes(sel[sel.length - 1].datas);
     // 像素级隐写清理(与 Python restore_file 一致):8bit RGBA 非隔行才解压
     // 清理(alpha LSB 全清 + 全透明透白);异常结构原样字节输出
