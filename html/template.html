@@ -467,10 +467,27 @@ function updateButtons() {
 }
 
 // ---------- 伪装/还原 ----------
-// 防吞序号:000~999 随机(含前导零),连续使用不重复;每次伪装/导出换一个
+// 防吞序号:000~999 抽签池(加密强随机洗牌),同一轮内绝不重复、
+// 跨轮(含上一轮最后一个)也必不同;1000 个用尽后重新洗牌开新轮
+let _badgePool = [];
+function _cryptoShuffle(arr) {
+  const r = new Uint32Array(arr.length);
+  if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(r);
+  else for (let i = 0; i < arr.length; i++) r[i] = Math.floor(Math.random() * 4294967296);
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = r[i] % (i + 1);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
 function nextBadge() {
-  let n;
-  do { n = String(Math.floor(Math.random() * 1000)).padStart(3, '0'); } while (n === state.lastBadge);
+  if (!_badgePool.length) {
+    _badgePool = _cryptoShuffle(Array.from({ length: 1000 }, (_, i) => String(i).padStart(3, '0')));
+    if (_badgePool[_badgePool.length - 1] === state.lastBadge) {
+      [_badgePool[0], _badgePool[_badgePool.length - 1]] = [_badgePool[_badgePool.length - 1], _badgePool[0]];
+    }
+  }
+  const n = _badgePool.pop();
   state.lastBadge = n;
   return n;
 }
@@ -777,11 +794,12 @@ function buildZip(entries) {
   return concatBytes(parts);
 }
 
-// ---------- 文件名统一(下载/分享/zip 共用,序号+原名) ----------
+// ---------- 文件名统一(下载/分享/zip 共用,序号+原名+防吞序号) ----------
 function nameForItem(it) {
   const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
   const suffix = it._showAsResult === false ? '' : '_伪装';
-  return `${String(it.seq).padStart(3, '0')}_${base}${suffix}.png`;
+  const badgePart = it._showAsResult !== false && it._lastBadge ? `_${it._lastBadge}` : '';
+  return `${String(it.seq).padStart(3, '0')}_${base}${badgePart}${suffix}.png`;
 }
 
 $('btnClear').onclick = () => {
@@ -798,18 +816,25 @@ $('btnClear').onclick = () => {
 $('btnZip').onclick = async () => {
   const done = state.queue.filter(x => x.status === 'done' && x.result);
   if (!done.length) return;
-  const nameOf = it => {
-    const base = it.name.replace(/\.(png|jpe?g|gif)$/i, '');
-    const suffix = it._showAsResult === false ? '' : '_伪装';
-    return `${String(it.seq).padStart(3, '0')}_${base}${suffix}.png`;
-  };
+  // 防吞序号:批量下载前逐张换号重伪装(每张一个新序号)
+  if (state.antiSwallow) {
+    let n = 0;
+    for (const it of done) {
+      if (it._showAsResult === true && it.file) {
+        n++;
+        setStatus(`防吞换号:正在重新伪装 ${n}/${done.length}…`);
+        await disguiseOne(it);
+      }
+    }
+  }
+  const nameOf = it => nameForItem(it);
   if (done.length > 30) {
     // 打包 zip(超过 30 张,浏览器逐个下载体验差)
     const entries = [];
     for (const it of done) entries.push({ name: nameOf(it), data: new Uint8Array(await it.result.arrayBuffer()) });
     const zip = buildZip(entries);
     downloadBlob(new Blob([zip], { type: 'application/zip' }), '伪装批量.zip');
-    setStatus(`已打包 ${entries.length} 张(文件名含导入序号),发 QQ 时从压缩包取出以文件发送`);
+    setStatus(`已打包 ${entries.length} 张(已逐张换号),发 QQ 时从压缩包取出以文件发送`);
     return;
   }
   // ≤30 张:逐张触发下载(不打包)
@@ -817,7 +842,7 @@ $('btnZip').onclick = async () => {
     downloadBlob(it.result, nameOf(it));
     await new Promise(r => setTimeout(r, 250)); // 间隔,避免浏览器吞掉连续下载
   }
-  setStatus(`已触发 ${done.length} 个下载;若浏览器询问“允许下载多个文件”,请选允许`);
+  setStatus(`已触发 ${done.length} 个下载(已逐张换号);若浏览器询问"允许下载多个文件",请选允许`);
 };
 // ---------- 封面设置(弹窗:预览 + 提醒 + 持久化 + 超大图自动缩小) ----------
 const COVER_STORE_KEY = 'pngDisguise_customCover';
