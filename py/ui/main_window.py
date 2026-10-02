@@ -226,9 +226,10 @@ class MainWindow(QMainWindow):
         self.current_source: str | None = None  # 当前队列源(原始图)
         self._current_path: str | None = None   # 预览显示的实际文件(源/伪装结果/还原结果)
         self._current_is_result: bool = False   # 当前显示的是伪装结果(可原地还原)
-        self._last_badge: str | None = None     # 上一个防吞序号(连续导出不重复)
+        self._last_badge: str | None = None     # 上一个防吞序号(跨轮也必不同)
+        self._badge_pool: list[str] = []        # 序号抽签池:洗牌 000~999,用尽重洗(轮内绝不重复)
         self._regen_badge: str | None = None    # 最近一次导出换号重伪装用的序号(状态栏展示)
-        self._regen_source: str | None = None   # 导出换号重伪装用的源(打码结果=打码图,否则=队列源)
+        self._result_sources: dict[str, str] = {}  # 队列源 -> 伪装实际用的源图(打码结果=打码图)
         self.worker: WorkThread | None = None
 
         self._build_ui()
@@ -239,12 +240,16 @@ class MainWindow(QMainWindow):
         return QSettings("pngDisguiseTool", "pngDisguiseTool")
 
     def _next_badge(self) -> str:
-        """防吞序号:000~999 随机(含前导零),连续使用不重复。"""
-        while True:
-            b = f"{random.randint(0, 999):03d}"
-            if b != self._last_badge:
-                self._last_badge = b
-                return b
+        """防吞序号:000~999,加密强随机源洗牌抽签——同一轮内绝不重复、
+        跨轮(含上一轮最后一个)也必不同;1000 个用尽后重新洗牌开新轮。"""
+        if not self._badge_pool:
+            self._badge_pool = [f"{i:03d}" for i in range(1000)]
+            random.SystemRandom().shuffle(self._badge_pool)
+            if self._badge_pool[-1] == self._last_badge:
+                self._badge_pool[0], self._badge_pool[-1] = self._badge_pool[-1], self._badge_pool[0]
+        b = self._badge_pool.pop()
+        self._last_badge = b
+        return b
 
     def closeEvent(self, event):
         # 记住窗口大小,下次启动恢复
@@ -625,6 +630,7 @@ class MainWindow(QMainWindow):
                 self.queue.remove(p)
             self.results.pop(p, None)
             self.status.pop(p, None)
+            self._result_sources.pop(p, None)
         if was_current or self.current_source not in self.queue:
             # 当前项被删 → 切到队列剩余最后一个(或空状态)
             if self.queue:
@@ -868,12 +874,13 @@ class MainWindow(QMainWindow):
         owner = self._worker_owner if self._worker_owner is not None else src
         self.results[owner] = out
         self.status[owner] = "done"
+        if mode == "disguise":
+            self._result_sources[owner] = owner   # 正常伪装:重伪装源=队列源自身
         # 伪装成功 → 双视角预览(封面/动画),当前对象=伪装文件(可原地还原)
         # 还原成功 → 预览=真图,当前对象=普通图
         if owner == self.current_source:
             self._current_path = out
             self._current_is_result = (mode == "disguise")
-            self._regen_source = None   # 正常伪装的源=队列源,仅在打码结果时由 _open_mosaic 设置
             if mode == "disguise":
                 self._show_disguise_result(out)
             else:
@@ -912,6 +919,31 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     # ------------------------------------------------------------ 复制/导出
+    def _rebadged_disguise(self, src: str) -> tuple[str | None, str | None]:
+        """用新随机序号把 src 重新伪装成临时文件(友好文件名含序号)。
+        返回 (文件路径, 序号);失败返回 (None, None),调用方退回原文件。"""
+        try:
+            with Image.open(src) as probe:
+                w, h = probe.size
+            bg = None
+            if not self.cover_transparent and isinstance(self.cover_bg, str):
+                bg = tuple(int(self.cover_bg[i:i+2], 16) for i in (1, 3, 5))
+            badge = self._next_badge()
+            cover = ip.make_cover(w, h, self.cover_path, badge=badge,
+                                  bg_color=bg, transparent=self.cover_transparent)
+            data = ip.process_file(src, cover_image=cover, keep_meta=self.keep_meta)
+            out = ip.save_temp(data)
+            dst = os.path.join(tempfile.gettempdir(),
+                               f"{Path(src).stem}_{badge}_伪装.png")
+            try:
+                os.replace(out, dst)
+            except OSError:
+                dst = out
+            return dst, badge
+        except Exception as e:
+            self.lbl_status.setText(f"换号重伪装失败,使用原文件导出: {e}")
+            return None, None
+
     def _regen_disguise_for_export(self) -> str | None:
         """防吞序号开启时,导出前用新随机序号重新伪装当前结果(所见即所得:
         预览/缩略图同步刷新为新导出)。返回新文件路径;不适用(关闭/无源/失败)
@@ -924,42 +956,24 @@ class MainWindow(QMainWindow):
             return None
         if not (self._current_is_result or self._looks_like_disguise(path)):
             return None
-        src = self._regen_source or self.current_source
+        src = self._result_sources.get(self.current_source) or self.current_source
         if not src or not os.path.isfile(src):
             return None
-        try:
-            self.lbl_status.setText("正在换号重新伪装…")
-            QApplication.processEvents()
-            with Image.open(src) as probe:
-                w, h = probe.size
-            bg = None
-            if not self.cover_transparent and isinstance(self.cover_bg, str):
-                bg = tuple(int(self.cover_bg[i:i+2], 16) for i in (1, 3, 5))
-            badge = self._next_badge()
-            self._regen_badge = badge
-            cover = ip.make_cover(w, h, self.cover_path, badge=badge,
-                                  bg_color=bg, transparent=self.cover_transparent)
-            data = ip.process_file(src, cover_image=cover, keep_meta=self.keep_meta)
-            out = ip.save_temp(data)
-            # 友好文件名(复制/拖出时 QQ、资源管理器里能直接看到序号)
-            dst = os.path.join(tempfile.gettempdir(),
-                               f"{Path(src).stem}_{badge}_伪装.png")
-            try:
-                os.replace(out, dst)
-            except OSError:
-                dst = out
-            owner = self.current_source
-            if owner is not None:
-                self.results[owner] = dst
-                self.status[owner] = "done"
-            self._current_path = dst
-            self._current_is_result = True
-            self._show_disguise_result(dst)
-            self._refresh_queue_list()
-            return dst
-        except Exception as e:
-            self.lbl_status.setText(f"换号重伪装失败,使用原文件导出: {e}")
+        self.lbl_status.setText("正在换号重新伪装…")
+        QApplication.processEvents()
+        dst, badge = self._rebadged_disguise(src)
+        if not dst:
             return None
+        self._regen_badge = badge
+        owner = self.current_source
+        if owner is not None:
+            self.results[owner] = dst
+            self.status[owner] = "done"
+        self._current_path = dst
+        self._current_is_result = True
+        self._show_disguise_result(dst)
+        self._refresh_queue_list()
+        return dst
 
     def _copy_current(self):
         # 复制当前显示的实际文件
@@ -1021,17 +1035,30 @@ class MainWindow(QMainWindow):
             return
         import shutil
         count = 0
-        for k, v in self.results.items():
-            if os.path.isfile(v):
-                try:
-                    # 文件名带导入序号(与 html 版一致),解包后不会混淆
-                    idx = self.queue.index(k) + 1 if k in self.queue else 0
-                    name = f"{idx:03d}_{Path(k).stem}_伪装.png"
-                    shutil.copyfile(v, os.path.join(d, name))
-                    count += 1
-                except Exception:
-                    pass
-        self.lbl_status.setText(f"已导出 {count} 张到 {d}")
+        items = list(self.results.items())
+        for n, (k, v) in enumerate(items):
+            if not os.path.isfile(v):
+                continue
+            try:
+                # 防吞序号:逐张换号重伪装(打码结果用打码图作源,绝不还原成原图)
+                src = self._result_sources.get(k, k)
+                badge = None
+                if self.anti_swallow and os.path.isfile(src) and self._looks_like_disguise(v):
+                    self.lbl_status.setText(f"防吞换号:正在重新伪装 {n + 1}/{len(items)}…")
+                    QApplication.processEvents()
+                    v2, badge = self._rebadged_disguise(src)
+                    if v2:
+                        v = v2
+                        self.results[k] = v2
+                # 文件名带导入序号+防吞序号(与 html 版一致),解包后不会混淆
+                idx = self.queue.index(k) + 1 if k in self.queue else 0
+                name = f"{idx:03d}_{Path(k).stem}" + (f"_{badge}" if badge else "") + "_伪装.png"
+                shutil.copyfile(v, os.path.join(d, name))
+                count += 1
+            except Exception:
+                pass
+        self.lbl_status.setText(f"已导出 {count} 张到 {d}" +
+                                ("(已逐张换号)" if self.anti_swallow and count else ""))
 
     # ------------------------------------------------------------ 选择
     def _pick_files(self):
@@ -1063,14 +1090,15 @@ class MainWindow(QMainWindow):
             self.results[self.current_source] = out
             self.status[self.current_source] = "done"
             if self._looks_like_disguise(out):
-                # 打码后伪装:与伪装结果同等待遇(还原按钮/双视角/导出换号重伪装)
-                self._regen_source = getattr(dlg, "mosaic_source_path", None)
+                # 打码后伪装:与伪装结果同等待遇(还原按钮/双视角/导出换号重伪装);
+                # 重伪装源=打码图(绝非原图,防止换号导出泄露未打码内容)
+                self._result_sources[self.current_source] = getattr(dlg, "mosaic_source_path", None) or self.current_source
                 self._current_path = out
                 self._current_is_result = True
                 self._show_disguise_result(out)
                 self.lbl_status.setText("打码后伪装完成,可复制或导出")
             else:
-                self._regen_source = None
+                self._result_sources.pop(self.current_source, None)
                 self._show_image(out)
                 self.lbl_status.setText("打码完成,可复制或导出")
             self._refresh_queue_list()
@@ -1103,6 +1131,7 @@ class MainWindow(QMainWindow):
         self.queue.clear()
         self.results.clear()
         self.status.clear()
+        self._result_sources.clear()
         self.current_source = None
         self._current_path = None
         self._current_is_result = False
