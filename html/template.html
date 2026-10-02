@@ -192,7 +192,7 @@ const state = {
   coverBg: localStorage.getItem('pngDisguise_coverBg') || '#2563EB',
   coverTransparent: localStorage.getItem('pngDisguise_coverTransparent') === '1',
   keepMeta: localStorage.getItem('pngDisguise_keepMeta') === '1',
-  antiSwallow: localStorage.getItem('pngDisguise_antiSwallow') !== '0', // 防吞序号默认开
+  antiSwallow: localStorage.getItem('pngDisguise_antiSwallow') === '1', // 防吞序号网页端默认关(exe 默认开)
   lastBadge: null,  // 上一次使用的随机序号(连导不重复)
   brushSize: +(localStorage.getItem('pngDisguise_brushSize') || 24),
   brushType: localStorage.getItem('pngDisguise_brushType') || 'mosaic'
