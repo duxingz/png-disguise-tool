@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog,
     QListWidget, QListWidgetItem, QWidget, QMessageBox, QProgressBar,
     QButtonGroup, QAbstractButton, QScrollArea, QFrame, QSizePolicy,
-    QListView, QAbstractItemView,
+    QListView, QAbstractItemView, QApplication,
 )
 
 from pngdisguise import image_processor as ip
@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         self._current_path: str | None = None   # 预览显示的实际文件(源/伪装结果/还原结果)
         self._current_is_result: bool = False   # 当前显示的是伪装结果(可原地还原)
         self._last_badge: str | None = None     # 上一个防吞序号(连续导出不重复)
+        self._regen_badge: str | None = None    # 最近一次导出换号重伪装用的序号(状态栏展示)
         self._regen_source: str | None = None   # 导出换号重伪装用的源(打码结果=打码图,否则=队列源)
         self.worker: WorkThread | None = None
 
@@ -917,6 +918,7 @@ class MainWindow(QMainWindow):
         返回 None,调用方退回原文件。"""
         if not self.anti_swallow:
             return None
+        self._regen_badge = None
         path = getattr(self, "_current_path", None)
         if not path or not os.path.isfile(path):
             return None
@@ -934,6 +936,7 @@ class MainWindow(QMainWindow):
             if not self.cover_transparent and isinstance(self.cover_bg, str):
                 bg = tuple(int(self.cover_bg[i:i+2], 16) for i in (1, 3, 5))
             badge = self._next_badge()
+            self._regen_badge = badge
             cover = ip.make_cover(w, h, self.cover_path, badge=badge,
                                   bg_color=bg, transparent=self.cover_transparent)
             data = ip.process_file(src, cover_image=cover, keep_meta=self.keep_meta)
@@ -977,7 +980,9 @@ class MainWindow(QMainWindow):
         md = QMimeData()
         md.setUrls([QUrl.fromLocalFile(path)])
         QGuiApplication.clipboard().setMimeData(md)
-        self.lbl_status.setText("伪装文件已复制,去 QQ 粘贴(发送的是文件,对方可保存原图)")
+        badge = getattr(self, "_regen_badge", None)
+        self.lbl_status.setText(("伪装文件已复制(封面序号 %s),去 QQ 粘贴(发送的是文件,对方可保存原图)" % badge)
+                                if badge else "伪装文件已复制,去 QQ 粘贴(发送的是文件,对方可保存原图)")
 
     def _copy_to_clipboard(self, path: str):
         """把普通图放进剪贴板,聊天窗口 Ctrl+V 可粘贴。"""
@@ -1004,7 +1009,8 @@ class MainWindow(QMainWindow):
         if target:
             import shutil
             shutil.copyfile(path, target)
-            self.lbl_status.setText(f"已导出:{target}")
+            badge = getattr(self, "_regen_badge", None)
+            self.lbl_status.setText(f"已导出:{target}" + (f" (封面序号 {badge})" if badge else ""))
 
     def _export_all(self):
         outs = [v for k, v in self.results.items() if os.path.isfile(v)]
