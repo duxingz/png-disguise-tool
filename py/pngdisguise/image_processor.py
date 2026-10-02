@@ -172,11 +172,12 @@ def meta_chunks_bytes(chunks: list[tuple[str, bytes]]) -> list[tuple[bytes, byte
 # ---------------------------------------------------------------------------
 
 def make_cover(canvas_w: int, canvas_h: int, cover_path: str | None = None,
-               cover_image: Image.Image | None = None, badge: int | None = None,
+               cover_image: Image.Image | None = None,
+               badge: int | str | None = None,
                bg_color: tuple | None = None, transparent: bool = False) -> Image.Image:
     """生成与画布同尺寸的封面:背景 + 封面图等比缩小完整居中(不裁剪)。
     bg_color: 背景色 (r,g,b);transparent: 背景透明(封面图本身带透明区域时保持透明)。
-    badge:批量伪装时画进封面左上角的导入序号(黑底白字圆角块,像素级)。"""
+    badge:封面左上角序号(int 或 "047" 这类 3 位字符串;None=不画,防吞序号功能用)。"""
     if transparent:
         canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     else:
@@ -200,7 +201,7 @@ def make_cover(canvas_w: int, canvas_h: int, cover_path: str | None = None,
             canvas.alpha_composite(src, ((canvas_w - dw) // 2, (canvas_h - dh) // 2))
         except Exception:
             pass  # 封面合成失败就纯蓝底
-    if badge:
+    if badge is not None:
         _draw_badge(canvas, badge)
     return canvas
 

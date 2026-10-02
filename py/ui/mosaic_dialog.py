@@ -271,7 +271,8 @@ class MosaicDialog(QDialog):
                                   transparent=self.transparent)
             data = ip.disguise_static(png, cover_image=cover)
             self.result_path = ip.save_temp(data)
-            os.remove(png)
+            # 保留打码源图:主窗口导出"换号重伪装"时要用它重新生成
+            self.mosaic_source_path = png
             self.accept()
         except Exception as e:
             QMessageBox.warning(self, "伪装失败", str(e))

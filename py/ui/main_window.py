@@ -12,6 +12,7 @@ png伪装工具 — 主窗口(PySide6)
 from __future__ import annotations
 
 import os
+import random
 import sys
 import time
 import tempfile
@@ -210,10 +211,11 @@ class MainWindow(QMainWindow):
         self.cover_path = _default_cover_path()
         ip.DEFAULT_COVER_PATH = self.cover_path
 
-        # 设置记忆:背景色/透明/保留元数据/笔刷(大小+类型)
+        # 设置记忆:背景色/透明/保留元数据/防吞序号/笔刷(大小+类型)
         self.cover_bg = self._win_settings().value("coverBg") or "#2563EB"
         self.cover_transparent = self._win_settings().value("coverTransparent", "0") == "1"
         self.keep_meta = self._win_settings().value("keepMeta", "0") == "1"
+        self.anti_swallow = self._win_settings().value("antiSwallow", "1") == "1"
         self.brush_size = int(self._win_settings().value("brushSize", "24"))
         self.brush_type = self._win_settings().value("brushType", "mosaic")
 
@@ -224,6 +226,8 @@ class MainWindow(QMainWindow):
         self.current_source: str | None = None  # 当前队列源(原始图)
         self._current_path: str | None = None   # 预览显示的实际文件(源/伪装结果/还原结果)
         self._current_is_result: bool = False   # 当前显示的是伪装结果(可原地还原)
+        self._last_badge: str | None = None     # 上一个防吞序号(连续导出不重复)
+        self._regen_source: str | None = None   # 导出换号重伪装用的源(打码结果=打码图,否则=队列源)
         self.worker: WorkThread | None = None
 
         self._build_ui()
@@ -232,6 +236,14 @@ class MainWindow(QMainWindow):
     def _win_settings(self):
         from PySide6.QtCore import QSettings
         return QSettings("pngDisguiseTool", "pngDisguiseTool")
+
+    def _next_badge(self) -> str:
+        """防吞序号:000~999 随机(含前导零),连续使用不重复。"""
+        while True:
+            b = f"{random.randint(0, 999):03d}"
+            if b != self._last_badge:
+                self._last_badge = b
+                return b
 
     def closeEvent(self, event):
         # 记住窗口大小,下次启动恢复
@@ -763,6 +775,8 @@ class MainWindow(QMainWindow):
         path = getattr(self, "_current_path", None)
         if not path or not os.path.isfile(path):
             return
+        # 防吞序号:拖出伪装结果前换新号重伪装(QQ/资源管理器拿到的是带新序号的文件)
+        path = self._regen_disguise_for_export() or path
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(path)])
         drag = QDrag(self)
@@ -832,10 +846,13 @@ class MainWindow(QMainWindow):
             self.progress.setVisible(True)
             self.progress.setMaximum(len(sources))
             self.progress.setValue(0)
-        # 批量(队列>1)时给每张分配导入序号,画进封面左上角
+        # 防吞序号(可开关):开启时每次伪装都随机 000~999;关闭时保留旧行为(批量=导入序号,单张=无)
         badges = {}
-        if mode == "disguise" and len(self.queue) > 1:
-            badges = {p: self.queue.index(p) + 1 for p in sources if p in self.queue}
+        if mode == "disguise":
+            if self.anti_swallow:
+                badges = {p: self._next_badge() for p in sources}
+            elif len(self.queue) > 1:
+                badges = {p: self.queue.index(p) + 1 for p in sources if p in self.queue}
         self.worker = WorkThread(sources, mode, badges=badges, cover_path=self.cover_path,
                                  bg_color=self.cover_bg if isinstance(self.cover_bg, str) else None,
                                  transparent=self.cover_transparent,
@@ -855,6 +872,7 @@ class MainWindow(QMainWindow):
         if owner == self.current_source:
             self._current_path = out
             self._current_is_result = (mode == "disguise")
+            self._regen_source = None   # 正常伪装的源=队列源,仅在打码结果时由 _open_mosaic 设置
             if mode == "disguise":
                 self._show_disguise_result(out)
             else:
@@ -893,6 +911,53 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     # ------------------------------------------------------------ 复制/导出
+    def _regen_disguise_for_export(self) -> str | None:
+        """防吞序号开启时,导出前用新随机序号重新伪装当前结果(所见即所得:
+        预览/缩略图同步刷新为新导出)。返回新文件路径;不适用(关闭/无源/失败)
+        返回 None,调用方退回原文件。"""
+        if not self.anti_swallow:
+            return None
+        path = getattr(self, "_current_path", None)
+        if not path or not os.path.isfile(path):
+            return None
+        if not (self._current_is_result or self._looks_like_disguise(path)):
+            return None
+        src = self._regen_source or self.current_source
+        if not src or not os.path.isfile(src):
+            return None
+        try:
+            self.lbl_status.setText("正在换号重新伪装…")
+            QApplication.processEvents()
+            with Image.open(src) as probe:
+                w, h = probe.size
+            bg = None
+            if not self.cover_transparent and isinstance(self.cover_bg, str):
+                bg = tuple(int(self.cover_bg[i:i+2], 16) for i in (1, 3, 5))
+            badge = self._next_badge()
+            cover = ip.make_cover(w, h, self.cover_path, badge=badge,
+                                  bg_color=bg, transparent=self.cover_transparent)
+            data = ip.process_file(src, cover_image=cover, keep_meta=self.keep_meta)
+            out = ip.save_temp(data)
+            # 友好文件名(复制/拖出时 QQ、资源管理器里能直接看到序号)
+            dst = os.path.join(tempfile.gettempdir(),
+                               f"{Path(src).stem}_{badge}_伪装.png")
+            try:
+                os.replace(out, dst)
+            except OSError:
+                dst = out
+            owner = self.current_source
+            if owner is not None:
+                self.results[owner] = dst
+                self.status[owner] = "done"
+            self._current_path = dst
+            self._current_is_result = True
+            self._show_disguise_result(dst)
+            self._refresh_queue_list()
+            return dst
+        except Exception as e:
+            self.lbl_status.setText(f"换号重伪装失败,使用原文件导出: {e}")
+            return None
+
     def _copy_current(self):
         # 复制当前显示的实际文件
         path = getattr(self, "_current_path", None)
@@ -900,6 +965,7 @@ class MainWindow(QMainWindow):
             return
         # 伪装 APNG → 作为文件复制(QQ 可粘贴文件,保留完整动画);普通图 → 图像复制
         if self._current_is_result or self._looks_like_disguise(path):
+            path = self._regen_disguise_for_export() or path
             self._copy_file_to_clipboard(path)
         else:
             self._copy_to_clipboard(path)
@@ -928,8 +994,12 @@ class MainWindow(QMainWindow):
         path = getattr(self, "_current_path", None)
         if not path or not os.path.isfile(path):
             return
-        suffix = "_伪装.png" if self._current_is_result else ".png"
-        default_name = Path(path).stem + suffix
+        regen = self._regen_disguise_for_export()
+        if regen:
+            path = regen
+            default_name = Path(path).name        # 换号产物已含 序号_伪装 命名
+        else:
+            default_name = Path(path).stem + ("_伪装.png" if self._current_is_result else ".png")
         target, _ = QFileDialog.getSaveFileName(self, "导出到", default_name, "PNG 图片 (*.png)")
         if target:
             import shutil
@@ -970,7 +1040,10 @@ class MainWindow(QMainWindow):
         if not self.current_source:
             return
         from .mosaic_dialog import MosaicDialog
-        badge = self.queue.index(self.current_source) + 1 if len(self.queue) > 1 and self.current_source in self.queue else None
+        if self.anti_swallow:
+            badge = self._next_badge()
+        else:
+            badge = self.queue.index(self.current_source) + 1 if len(self.queue) > 1 and self.current_source in self.queue else None
         dlg = MosaicDialog(self, self.current_source, self.cover_path, badge=badge,
                            brush_size=self.brush_size, brush_type=self.brush_type,
                            bg_color=self.cover_bg, transparent=self.cover_transparent)
@@ -979,12 +1052,21 @@ class MainWindow(QMainWindow):
             self.brush_type = self.canvas_brush_type(dlg)
             self._win_settings().setValue("brushSize", str(self.brush_size))
             self._win_settings().setValue("brushType", self.brush_type)
-            # 打码完成 → 结果作为当前图结果,预览替换
+            # 打码完成 → 结果归属当前源,预览替换
             out = dlg.result_path
             self.results[self.current_source] = out
             self.status[self.current_source] = "done"
-            self._show_image(out)
-            self.lbl_status.setText("打码完成,可复制或导出")
+            if self._looks_like_disguise(out):
+                # 打码后伪装:与伪装结果同等待遇(还原按钮/双视角/导出换号重伪装)
+                self._regen_source = getattr(dlg, "mosaic_source_path", None)
+                self._current_path = out
+                self._current_is_result = True
+                self._show_disguise_result(out)
+                self.lbl_status.setText("打码后伪装完成,可复制或导出")
+            else:
+                self._regen_source = None
+                self._show_image(out)
+                self.lbl_status.setText("打码完成,可复制或导出")
             self._refresh_queue_list()
             self._update_buttons()
 
@@ -993,17 +1075,20 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, self.cover_path,
                              bg_color=(self.cover_bg if isinstance(self.cover_bg, str) else "#2563EB"),
                              transparent=self.cover_transparent,
-                             keep_meta=self.keep_meta)
+                             keep_meta=self.keep_meta,
+                             anti_swallow=self.anti_swallow)
         if dlg.exec():
             self.cover_path = dlg.selected_cover()
             self.cover_bg = dlg.selected_bg()
             self.cover_transparent = dlg.selected_transparent()
             self.keep_meta = dlg.selected_keep_meta()
+            self.anti_swallow = dlg.selected_anti_swallow()
             # 全部持久化
             st = self._win_settings()
             st.setValue("coverBg", self.cover_bg)
             st.setValue("coverTransparent", "1" if self.cover_transparent else "0")
             st.setValue("keepMeta", "1" if self.keep_meta else "0")
+            st.setValue("antiSwallow", "1" if self.anti_swallow else "0")
             st.setValue("appVersion", "1.0.0")  # 版本号记录在设置存储里
             ip.DEFAULT_COVER_PATH = self.cover_path
 

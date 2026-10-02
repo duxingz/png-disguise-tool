@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 
 class SettingsDialog(QDialog):
     def __init__(self, parent, current_cover: str, bg_color: str = "#2563EB",
-                 transparent: bool = False, keep_meta: bool = False):
+                 transparent: bool = False, keep_meta: bool = False,
+                 anti_swallow: bool = True):
         super().__init__(parent)
         self.setWindowTitle("设置")
         self.setMinimumWidth(420)
@@ -26,6 +27,7 @@ class SettingsDialog(QDialog):
         self._bg_color = bg_color
         self._transparent = transparent
         self._keep_meta = keep_meta
+        self._anti_swallow = anti_swallow
 
         lay = QVBoxLayout(self)
         title = QLabel("伪装首帧封面")
@@ -64,6 +66,12 @@ class SettingsDialog(QDialog):
         self.chk_meta.setChecked(self._keep_meta)
         self.chk_meta.toggled.connect(lambda v: setattr(self, "_keep_meta", v))
         lay.addWidget(self.chk_meta)
+
+        # 防吞序号:每次伪装/导出随机换号 000~999,防 QQ 吞重复图
+        self.chk_anti = QCheckBox("防吞序号:每次伪装/导出随机换号 000~999\n(同一张图重复发会被 QQ 吞,随机换号可避开;推荐开启)")
+        self.chk_anti.setChecked(self._anti_swallow)
+        self.chk_anti.toggled.connect(lambda v: setattr(self, "_anti_swallow", v))
+        lay.addWidget(self.chk_anti)
 
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignCenter)
@@ -169,3 +177,6 @@ class SettingsDialog(QDialog):
 
     def selected_keep_meta(self) -> bool:
         return self._keep_meta
+
+    def selected_anti_swallow(self) -> bool:
+        return self._anti_swallow
