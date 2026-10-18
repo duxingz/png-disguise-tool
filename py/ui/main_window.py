@@ -19,8 +19,8 @@ import tempfile
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import Qt, Signal, QThread, QRect, QTimer, QEvent, QPoint, QSize
-from PySide6.QtGui import QAction, QImage, QPixmap, QGuiApplication, QClipboard, QPainter, QColor, QDrag, QFontMetrics, QShortcut, QKeySequence
+from PySide6.QtCore import Qt, Signal, QThread, QRect, QTimer, QEvent, QPoint, QPointF, QSize
+from PySide6.QtGui import QAction, QImage, QPixmap, QGuiApplication, QClipboard, QPainter, QColor, QPen, QDrag, QFontMetrics, QShortcut, QKeySequence
 from PySide6.QtCore import QMimeData, QUrl
 from PySide6.QtWidgets import (
     QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog,
@@ -30,9 +30,13 @@ from PySide6.QtWidgets import (
 )
 
 from pngdisguise import image_processor as ip
+from .theme import (SPACE, TYPE, apply_theme, current_palette, load_theme,
+                    save_theme, set_variant)
+from .heart_bar import HeartProgressBar, heart_path
 
 MAX_BATCH = 150
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif"}
+
 
 
 def _default_cover_path() -> str:
@@ -198,6 +202,49 @@ class ApngAnimPlayer(ScaledLabel):
 # 主窗口
 # ---------------------------------------------------------------------------
 
+class PreviewLabel(QLabel):
+    """预览标签：没有图（空态）时，在提示文字上方画一枚心粉爱心。
+
+    这是小独四色里**粉色**在"空态"（用户看到的第一个画面）的合法落点——
+    套件只允许粉色出现在爱心形状里，而空态正好需要一点人味。
+    有图的时侯什么都不画，纯当图片容器。
+    """
+
+    HEART = 26.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.RichText)
+
+    def has_image(self) -> bool:
+        pm = self.pixmap()
+        return pm is not None and not pm.isNull()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.has_image():
+            return
+        pal = current_palette()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        # 提示文字整体垂直居中；爱心放在文字块上方 20px
+        fm = self.fontMetrics()
+        lines = max(1, self.text().count("<br") + 1)
+        text_h = fm.height() * lines
+        s = self.HEART
+        cx = self.width() / 2.0
+        cy = (self.height() - text_h) / 2.0 - 12.0 - s * 0.32
+        p.setPen(QPen(QColor(pal["surface"]), 2.0))
+        p.setBrush(QColor(pal["sel_border"]))          # 心粉
+        p.drawPath(heart_path(cx, cy, s))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 235))
+        p.drawEllipse(QPointF(cx - s * 0.17, cy - s * 0.20), s * 0.075, s * 0.075)
+        p.end()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -213,6 +260,7 @@ class MainWindow(QMainWindow):
 
         # 设置记忆:背景色/透明/保留元数据/防吞序号/笔刷(大小+类型)
         self.cover_bg = self._win_settings().value("coverBg") or "#2563EB"
+        self._theme = load_theme()
         self.cover_transparent = self._win_settings().value("coverTransparent", "0") == "1"
         self.keep_meta = self._win_settings().value("keepMeta", "0") == "1"
         self.anti_swallow = self._win_settings().value("antiSwallow", "1") == "1"
@@ -266,53 +314,54 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root.setContentsMargins(SPACE["lg"], SPACE["lg"], SPACE["lg"], SPACE["lg"])
+        root.setSpacing(SPACE["md"])
 
         # 顶栏:标题 + 设置
         top = QHBoxLayout()
+        top.setSpacing(SPACE["sm"])
         title = QLabel("png伪装工具")
-        title.setStyleSheet("font-size:20px;font-weight:600;")
+        title.setObjectName("appTitle")
         top.addWidget(title)
         top.addStretch(1)
-        btn_settings = QPushButton("设置")
-        btn_settings.clicked.connect(self._open_settings)
-        top.addWidget(btn_settings)
+        self.btn_settings = QPushButton("设置")
+        set_variant(self.btn_settings, "ghost")
+        self.btn_settings.clicked.connect(self._open_settings)
+        top.addWidget(self.btn_settings)
         root.addLayout(top)
 
         # 预览区(大图,结果/封面显示于此;支持拖动导出与双视角)
         self.preview_stack = QFrame()
-        self.preview_stack.setObjectName("previewStack")
-        self.preview_stack.setStyleSheet(
-            "#previewStack { background:#f2f4f9; border:2px dashed #c3c9d6; border-radius:8px; }"
-            ".duo-title { font-size:12px; color:#556; background:#e8ebf3; border-radius:10px; padding:2px 12px; }"
-        )
+        self.preview_stack.setObjectName("previewBox")
+        self.preview_stack.setProperty("empty", "1")
+        self.preview_stack.setProperty("dragging", "0")
         stack_lay = QHBoxLayout(self.preview_stack)
-        stack_lay.setContentsMargins(8, 8, 8, 8)
+        stack_lay.setContentsMargins(SPACE["md"], SPACE["md"],
+                                     SPACE["md"], SPACE["md"])
 
         # 单图视图
-        self.preview = QLabel("把图片或文件夹拖到这里\n\n也可以点下方「选择图片」\n伪装后按住图片可拖到 QQ 发送")
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setStyleSheet("font-size:14px;color:#888;background:transparent;")
+        self.preview = PreviewLabel()
+        self.preview.setObjectName("previewHint")
+        self.preview.setText(self._empty_hint_html())
         self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         stack_lay.addWidget(self.preview)
 
         # 双视角:左=对方视角(封面) / 右=点开效果(动画播放)
         self.dual = QWidget()
-        self.dual.setStyleSheet("background:transparent;")
+        self.dual.setObjectName("pane")
         dl = QHBoxLayout(self.dual)
         dl.setContentsMargins(0, 0, 0, 0)
-        dl.setSpacing(14)
+        dl.setSpacing(SPACE["lg"])
 
         def _duo_cell(title, anim=False):
             cell = QWidget()
-            cell.setStyleSheet("background:transparent;")
+            cell.setObjectName("pane")
             v = QVBoxLayout(cell)
             v.setContentsMargins(0, 0, 0, 0)
-            v.setSpacing(6)
+            v.setSpacing(SPACE["sm"])
             t = QLabel(title)
+            t.setObjectName("duoChip")
             t.setAlignment(Qt.AlignCenter)
-            t.setStyleSheet("font-size:12px;color:#556;background:#e8ebf3;border-radius:10px;padding:2px 12px;")
             # 标题固定为小胶囊,不被拉伸;图片占据剩余全部空间
             t.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             if anim:
@@ -320,8 +369,7 @@ class MainWindow(QMainWindow):
             else:
                 img = ScaledLabel()
             img.setAlignment(Qt.AlignCenter)
-            img.setStyleSheet("background:transparent;")
-            v.addWidget(t, 0)
+            v.addWidget(t, 0, Qt.AlignHCenter)
             v.addWidget(img, 1)
             return cell, img
 
@@ -337,25 +385,26 @@ class MainWindow(QMainWindow):
         self.preview_stack.installEventFilter(self)
         root.addWidget(self.preview_stack, 1)
 
-        # 单图模式操作区(第一版 UI)
+        # 单图模式操作区(第一版 UI):主操作唯一实心,破坏性动作转文字按钮
         self.single_bar = QWidget()
         sb = QHBoxLayout(self.single_bar)
         sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(SPACE["sm"])
         self.btn_disguise = QPushButton("APNG伪装")
-        self.btn_disguise.setStyleSheet("font-size:15px;padding:8px 18px;")
+        set_variant(self.btn_disguise, "primary")
         self.btn_disguise.clicked.connect(self._disguise_current)
         self.btn_restore = QPushButton("还原真图")
-        self.btn_restore.setStyleSheet("font-size:15px;padding:8px 18px;")
         self.btn_restore.clicked.connect(self._restore_current)
         self.btn_restore.hide()  # 仅当前是伪装文件时出现
         self.btn_mosaic = QPushButton("打码编辑…")
+        set_variant(self.btn_mosaic, "outlineEnergy")   # 蜜橙描边次按钮：橙的常驻位之一
         self.btn_mosaic.clicked.connect(self._open_mosaic)
         self.btn_copy = QPushButton("复制")
         self.btn_copy.clicked.connect(self._copy_current)
         self.btn_export = QPushButton("导出到…")
         self.btn_export.clicked.connect(self._export_current)
         self.btn_remove_one = QPushButton("移除图片")
-        self.btn_remove_one.setStyleSheet("font-size:15px;padding:8px 18px;")
+        set_variant(self.btn_remove_one, "quietDanger")
         self.btn_remove_one.clicked.connect(self._remove_current)
         sb.addWidget(self.btn_disguise)
         sb.addWidget(self.btn_restore)
@@ -370,26 +419,31 @@ class MainWindow(QMainWindow):
         self.queue_panel = QWidget()
         qp = QVBoxLayout(self.queue_panel)
         qp.setContentsMargins(0, 0, 0, 0)
+        qp.setSpacing(SPACE["sm"])
         qhead = QHBoxLayout()
+        qhead.setSpacing(SPACE["sm"])
         self.lbl_queue = QLabel("队列 (0/150)")
-        self.lbl_queue.setStyleSheet("font-size:14px;font-weight:600;")
+        self.lbl_queue.setObjectName("sectionTitle")
         qhead.addWidget(self.lbl_queue)
         qhead.addStretch(1)
         btn_clear = QPushButton("清空")
+        set_variant(btn_clear, "ghost")
         btn_clear.clicked.connect(self._clear_queue)
         qhead.addWidget(btn_clear)
         qp.addLayout(qhead)
 
         self.list = QListWidget()
+
+        self.list.setObjectName("queueList")   # 选中态归卡片自己画，列表项不画背景/边框
         self.list.setViewMode(QListView.IconMode)
         self.list.setFlow(QListView.LeftToRight)
         self.list.setWrapping(False)
         self.list.setResizeMode(QListView.Adjust)
-        self.list.setSpacing(10)
+        self.list.setSpacing(8)
         self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list.setDragEnabled(False)
         self.list.setMinimumHeight(150)
-        self.list.setStyleSheet("QListWidget { background:transparent; border:none; }")
+        self.list.setFrameShape(QFrame.NoFrame)
         self.list.itemSelectionChanged.connect(self._sync_card_highlight)
         self.list.itemClicked.connect(self._on_queue_clicked)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -397,12 +451,17 @@ class MainWindow(QMainWindow):
         qp.addWidget(self.list)
 
         qbar = QHBoxLayout()
+        qbar.setSpacing(SPACE["sm"])
         self.btn_all = QPushButton("全部伪装")
-        self.btn_all.setStyleSheet("font-size:15px;padding:6px 16px;")
+        set_variant(self.btn_all, "primary")
+        # 两枚按钮不再吃满整行(旧版各 485px,像两行居中标签):
+        # 宽度封顶,中间那段留给进度条
+        self.btn_all.setMaximumWidth(200)
         self.btn_all.clicked.connect(self._disguise_all)
-        self.progress = QProgressBar()
+        self.progress = HeartProgressBar()   # 小独：填充尽头骑心粉爱心瞳
         self.progress.setVisible(False)
         self.btn_export_all = QPushButton("导出全部结果")
+        self.btn_export_all.setMaximumWidth(200)
         self.btn_export_all.clicked.connect(self._export_all)
         qbar.addWidget(self.btn_all)
         qbar.addWidget(self.progress, 1)
@@ -412,24 +471,68 @@ class MainWindow(QMainWindow):
 
         # 底部工具:选择图片 / 提示
         bottom = QHBoxLayout()
-        btn_open = QPushButton("选择图片…")
-        btn_open.clicked.connect(self._pick_files)
-        bottom.addWidget(btn_open)
+        bottom.setSpacing(SPACE["sm"])
+        self.btn_open = QPushButton("选择图片…")
+        self.btn_open.clicked.connect(self._pick_files)
+        bottom.addWidget(self.btn_open)
         bottom.addStretch(1)
         self.lbl_status = QLabel("")
-        self.lbl_status.setStyleSheet("color:#777;")
+        self.lbl_status.setObjectName("statusLine")
         bottom.addWidget(self.lbl_status)
         root.addLayout(bottom)
 
         self.single_bar.show()
+
         self.queue_panel.hide()
+
         self._update_buttons()
+
+        self._sync_open_button()
 
         # 防子控件拦截拖放(拖放统一由主窗口接收)
         for w in self.findChildren(QWidget):
             w.setAcceptDrops(False)
             if hasattr(w, "viewport"):
                 w.viewport().setAcceptDrops(False)
+
+    # ---- 预览框状态 ---------------------------------------------------
+    def _set_preview_empty(self, empty: bool):
+        """空态才画虚线(投放区语义);有图后转实线浅底,不再暗示"往这儿拖"。"""
+        if self.preview_stack.property("empty") == ("1" if empty else "0"):
+            return
+        self.preview_stack.setProperty("empty", "1" if empty else "0")
+        self.preview_stack.style().unpolish(self.preview_stack)
+        self.preview_stack.style().polish(self.preview_stack)
+
+    def _sync_open_button(self):
+        """队列空时「选择图片…」就是这一屏唯一的主动作 → 升为天蓝实心。
+
+        套件四色配额要求"每屏恰一个实心主操作"：空态下导入图片就是主动作，
+        有图之后它退回次按钮，把主位让给「APNG伪装」。
+        """
+        if not hasattr(self, "btn_open"):
+            return
+        set_variant(self.btn_open, "primary" if not self.queue else "")
+        self.btn_open.style().unpolish(self.btn_open)
+        self.btn_open.style().polish(self.btn_open)
+
+    def _empty_hint_html(self) -> str:
+        """空态提示（富文本）：关键词用蜜橙 —— 空态是橙色在本程序的常驻位之一。"""
+        pal = current_palette()
+        return ("把图片或文件夹 <b style='color:%s'>拖进来</b>，"
+                "或点下方「选择图片…」<br>"
+                "伪装后，按住图片可以直接拖到 QQ 发送" % pal["energy_text"])
+
+    def _set_preview_hint(self, text: str | None = None):
+        """切回提示页（空态）：虚线框 + 心粉爱心 + 提示文字。"""
+        self.preview.clear()
+        self.preview.setText((text or self._empty_hint_html()).replace("\n", "<br>"))
+        self._set_preview_empty(True)
+
+    def _set_dragging(self, on: bool):
+        self.preview_stack.setProperty("dragging", "1" if on else "0")
+        self.preview_stack.style().unpolish(self.preview_stack)
+        self.preview_stack.style().polish(self.preview_stack)
 
     # ------------------------------------------------------------ 队列操作
     def add_images(self, paths: list[str]):
@@ -451,20 +554,37 @@ class MainWindow(QMainWindow):
             self._show_single(self.queue[0])
         elif len(self.queue) > 1:
             self._show_queue_mode()
+        self._sync_open_button()
         if added:
-            self.lbl_status.setText(f"已导入 {added} 张" + (f",超限拒绝 {rejected} 张" if rejected else ""))
+            # 口径写清：这里是"这一次导入了多少"，括号里给队列总数，
+            # 免得和左上角「队列 (N/150)」对不上让人以为丢图。
+            self.lbl_status.setText(
+                f"已导入 {added} 张（当前共 {len(self.queue)} 张）"
+                + (f"，超限拒绝 {rejected} 张" if rejected else ""))
         return added, rejected
 
     def _sync_card_highlight(self):
-        """选中项的卡片加蓝框,未选中去蓝框(卡片自绘边框,需显式刷新)。"""
+        """选中/当前项的卡片切 `state` 属性（样式在主题 QSS 的 QFrame#queueCard 里）。
+
+        - selected：列表里勾上的（心粉环 = 套件的 sel_border，一次可多个）
+        - current ：预览窗正在显示的（天蓝环 + 浅蓝底，只有一个）
+        两者都成立时按 current 画。
+
+        旧版在这里对卡片 `setStyleSheet("background:#fff;border:2px solid #2563EB")`
+        ——没有选择器，规则会级联到卡片里每个 QLabel/QPushButton，于是选中一张卡会
+        出现四层同心蓝框。现在只改属性，子控件保持中性。
+        """
         for i in range(self.list.count()):
             w = self.list.itemWidget(self.list.item(i))
             if w is None:
                 continue
             sel = self.list.item(i).isSelected()
             cur = (self.queue[i] == self.current_source if i < len(self.queue) else False)
-            border = "2px solid #2563EB" if (sel or cur) else "2px solid transparent"
-            w.setStyleSheet(f"background:#fff;border:{border};border-radius:8px;")
+            val = "current" if cur else ("selected" if sel else "none")
+            if w.property("state") != val:
+                w.setProperty("state", val)
+                w.style().unpolish(w)
+                w.style().polish(w)
 
     def _refresh_queue_list(self):
         self.list.clear()
@@ -474,10 +594,12 @@ class MainWindow(QMainWindow):
             if is_disguise:
                 label = "伪装图·可还原"
             else:
-                label = {"pending": "待处理", "processing": "处理中…", "done": "✓ 完成", "failed": "✗ 失败"}.get(st, "待处理")
+                # 纯文字标签(不再用 ✓/✗ 符号:缺字形时会变豆腐块)
+                label = {"pending": "待处理", "processing": "处理中",
+                         "done": "完成", "failed": "失败"}.get(st, "待处理")
             item = QListWidgetItem()
             item.setData(Qt.UserRole, p)
-            item.setSizeHint(QSize(126, 138))
+            item.setSizeHint(QSize(122, 146))
             self.list.addItem(item)
             card = self._build_card(p, i, label, st, cur=False)
             self.list.setItemWidget(item, card)
@@ -492,20 +614,23 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     def _build_card(self, path: str, idx: int, label: str, st: str, cur: bool) -> QWidget:
-        """队列缩略图卡片:缩略图(带序号角标) + 文件名 + 状态,当前项蓝框高亮。"""
-        card = QWidget()
-        card.setStyleSheet(
-            "background:#fff; border-radius:8px;" +
-            (f"border:2px solid #2563EB;" if cur else "border:2px solid transparent;")
-        )
+        """队列缩略图卡片:缩略图(带序号角标) + 文件名 + 状态胶囊。
+
+        卡片是 `QFrame#queueCard`,选中/当前靠属性 `sel` 切样式。
+        **不要再用无选择器的 setStyleSheet** —— 旧版那样做会把蓝框级联给卡片里
+        每个子控件,选中一张就出现四层同心蓝框(v1.22 视觉验收抓到的真 bug)。
+        """
+        card = QFrame()
+        card.setObjectName("queueCard")
+        card.setProperty("state", "current" if cur else "none")
         v = QVBoxLayout(card)
-        v.setContentsMargins(4, 4, 4, 4)
-        v.setSpacing(3)
+        v.setContentsMargins(SPACE["xs"], SPACE["xs"], SPACE["xs"], SPACE["sm"])
+        v.setSpacing(SPACE["xs"])
 
         # 缩略图:伪装结果显示封面(带序号),其余显示原图
         thumb_src = self.results.get(path) if (st == "done" and path in self.results) else path
         pix = QPixmap(104, 78)
-        pix.fill(QColor(238, 240, 245))
+        pix.fill(QColor(current_palette()["surface_alt"]))
         try:
             img = Image.open(thumb_src)
             img.seek(0)
@@ -530,37 +655,35 @@ class MainWindow(QMainWindow):
         p.end()
         # 缩略图容器(叠加右上角 × 删除按钮)
         holder = QWidget()
-        holder.setStyleSheet("background:transparent;")
+        holder.setObjectName("pane")
         hl = QHBoxLayout(holder)
         hl.setContentsMargins(0, 0, 0, 0)
         img_label = QLabel()
         img_label.setPixmap(pix)
         img_label.setAlignment(Qt.AlignCenter)
-        img_label.setStyleSheet("background:transparent;")
         hl.addWidget(img_label)
-        btn_x = QPushButton("✕")
-        btn_x.setFixedSize(20, 20)
+        btn_x = QPushButton("×")
+        btn_x.setObjectName("cardDelete")
+        btn_x.setFixedSize(22, 22)
         btn_x.setCursor(Qt.PointingHandCursor)
         btn_x.setToolTip("删除这张")
-        btn_x.setStyleSheet(
-            "QPushButton { background:rgba(0,0,0,140); color:white; border:none;"
-            "border-radius:10px; font-size:11px; font-weight:bold; }"
-            "QPushButton:hover { background:#c62828; }")
         btn_x.clicked.connect(lambda _=False, pp=path: self._remove_queue_paths([pp]))
         hl.addWidget(btn_x, 0, Qt.AlignTop)
         v.addWidget(holder)
 
         # 文件名(截断)
         fm = QFontMetrics(card.font())
-        name = fm.elidedText(os.path.basename(path), Qt.ElideRight, 108)
+        name = fm.elidedText(os.path.basename(path), Qt.ElideRight, 104)
         name_label = QLabel(name)
-        name_label.setStyleSheet("font-size:11px;color:#555;background:transparent;")
+        name_label.setObjectName("cardName")
         v.addWidget(name_label)
 
-        # 状态
-        color = {"done": "#2e7d32", "failed": "#c62828", "processing": "#1565c0"}.get(st, "#888888")
+        # 状态胶囊:待处理灰 / 处理中琥珀 / 完成天蓝 / 失败危险橙
+        pill = {"pending": "pillPending", "processing": "pillRunning",
+                "done": "pillDone", "failed": "pillFailed"}.get(st, "pillPending")
         st_label = QLabel(label)
-        st_label.setStyleSheet(f"font-size:11px;color:{color};background:transparent;")
+        st_label.setObjectName(pill)
+        st_label.setAlignment(Qt.AlignCenter)
         v.addWidget(st_label)
         return card
 
@@ -581,8 +704,13 @@ class MainWindow(QMainWindow):
         self._current_is_result = False
         self.single_bar.hide()
         self.queue_panel.show()
-        # 预览区仍可显示单张(点击队列项)
-        self.preview.setText("已进入批量模式\n点击左侧队列项可预览\n点「全部伪装」批量处理")
+        # 进批量模式要**真的切回提示页**：只换文字的话预览里还留着上一张图、
+        # 双视角也没收起来，于是"投放区虚线"套在图片上、提示文字压根看不见。
+        self.anim_player.stop()
+        self.dual.hide()
+        self.preview.show()
+        self.preview.setPixmap(QPixmap())
+        self._set_preview_hint("已进入批量模式，点队列里的缩略图可预览\n点「全部伪装」批量处理")
         self._update_buttons()
 
     def _queue_context_menu(self, pos):
@@ -648,9 +776,9 @@ class MainWindow(QMainWindow):
                 self.dual.hide()
                 self.preview.show()
                 self.preview.setPixmap(QPixmap())
-                self.preview.setText("把图片或文件夹拖到这里 / 点击选择 / Ctrl+V 粘贴" + chr(10) + chr(10) + "伪装后按住图片可拖到 QQ 发送")
-                self.preview.setStyleSheet("font-size:14px;color:#888;background:transparent;")
+                self._set_preview_hint()
         self._refresh_queue_list()
+        self._sync_open_button()
         self.lbl_status.setText(f"已删除 {len(paths)} 项")
 
     def _on_queue_clicked(self, item):
@@ -748,14 +876,15 @@ class MainWindow(QMainWindow):
             pm = QPixmap.fromImage(qimg)
             self.preview.setPixmap(pm)
             self.preview.setAlignment(Qt.AlignCenter)
-            self.preview.setStyleSheet("font-size:14px;color:#888;background:transparent;")
+            self._set_preview_empty(False)   # 有图后不再画"投放区"虚线
         except Exception as e:
-            self.preview.setText(f"无法预览: {e}")
+            self._set_preview_hint(f"无法预览: {e}")
 
     def _show_disguise_result(self, path: str):
         """双视角:左=对方视角(封面静态) 右=点开效果(APNG 动画播放)。"""
         self.preview.hide()
         self.dual.show()
+        self._set_preview_empty(False)
         try:
             img = Image.open(path)
             img.seek(0)  # 封面(默认帧)
@@ -1124,7 +1253,8 @@ class MainWindow(QMainWindow):
                              bg_color=(self.cover_bg if isinstance(self.cover_bg, str) else "#2563EB"),
                              transparent=self.cover_transparent,
                              keep_meta=self.keep_meta,
-                             anti_swallow=self.anti_swallow)
+                             anti_swallow=self.anti_swallow,
+                             theme=self._theme)
         if dlg.exec():
             self.cover_path = dlg.selected_cover()
             self.cover_bg = dlg.selected_bg()
@@ -1139,6 +1269,15 @@ class MainWindow(QMainWindow):
             st.setValue("antiSwallow", "1" if self.anti_swallow else "0")
             st.setValue("appVersion", "1.0.0")  # 版本号记录在设置存储里
             ip.DEFAULT_COVER_PATH = self.cover_path
+            # 主题：立刻生效 + 记住
+            new_theme = dlg.selected_theme()
+            if new_theme != self._theme:
+                self._theme = new_theme
+                save_theme(new_theme)
+                from PySide6.QtWidgets import QApplication as _QApp
+                apply_theme(_QApp.instance(), new_theme)
+                self._refresh_queue_list()   # 卡片是按状态属性画的，重刷一次配色
+                self._set_preview_empty(self.preview_stack.property("empty") == "1")
 
     # ------------------------------------------------------------ 清空
     def _clear_queue(self):
@@ -1154,21 +1293,26 @@ class MainWindow(QMainWindow):
         self.dual.hide()
         self.preview.show()
         self.preview.setPixmap(QPixmap())
-        self.preview.setText("把图片或文件夹拖到这里 / 点击选择 / Ctrl+V 粘贴" + "\n\n" + "伪装后按住图片可拖到 QQ 发送")
-        self.preview.setStyleSheet("font-size:14px;color:#888;background:transparent;")
+        self._set_preview_hint()
         self.cover_view.setPixmap(QPixmap())
         self.single_bar.show()
         self.queue_panel.hide()
         self._refresh_queue_list()
+        self._sync_open_button()
         self.lbl_status.setText("已清空")
 
 
     def dragEnterEvent(self, event):
         md = event.mimeData()
         if md.hasUrls():
+            self._set_dragging(True)      # 预览框转虚线蓝框,提示"松手就收"
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_dragging(False)
+        super().dragLeaveEvent(event)
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
@@ -1177,6 +1321,7 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def dropEvent(self, event):
+        self._set_dragging(False)
         md = event.mimeData()
         local_files = []
         if md.hasUrls():
@@ -1205,3 +1350,15 @@ class MainWindow(QMainWindow):
 def _natural_key(name: str):
     import re
     return [(0, int(p)) if p.isdigit() else (1, p.lower()) for p in re.split(r"(\d+)", name)]
+
+
+
+
+
+
+
+
+
+
+
+
