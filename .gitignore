@@ -21,11 +21,14 @@ html/package-lock.json
 *.tmp
 *_test.*
 _test*.png
+# QA 渲染产物（qa_render.py 生成，可随时重跑，不入库）
+py/_qa_shots/
 
 # 大型交付物(不纳入 git;发布走 GitHub Release)
 png伪装工具.exe
 png伪装工具.html
 png伪装工具-分享版.zip
+png伪装工具.zip
 
 # 环境
 .idea/
@@ -46,3 +49,4 @@ android/app/src/main/assets/index.html
 android/*.jks
 *.apk
 *.apk.bak
+

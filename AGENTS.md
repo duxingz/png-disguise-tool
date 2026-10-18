@@ -34,10 +34,49 @@
 - html 靠 V8 JIT + CompressionStream(JS 端本就是逐行自适应滤波,含 Paeth)。
 - 已知外部限制:QQ 图片消息会转码丢 APNG 动画→引导用户"文件方式发送/勾选原图"(两端说明栏都有此提示);浏览器剪贴板消毒,html 无法复制文件到剪贴板。
 
+## 界面（v1.23.0 起，改 UI 前必读）
+
+- **皮肤 = 小独爱心 / 小独夜**（`D:\workwork\UI设计规则\xiaodu-heart-ui` 的字节级掉件
+  `py/ui/theme_xiaoduheart.py`）。改色**只改套件** `tokens/tokens.json`，跑套件
+  `scripts/check_tokens.py` 全绿后**重拷**掉件；`py/ui/theme.py` 只是薄壳 + 站点层。
+- **四色配额（套件 v2.3.0 硬规则）**：每套 UI 至少一个「主正常态」四色同框，其余状态 ≥3 色。
+  本程序四个落点：**粉** = 批量进度条的爱心瞳（`py/ui/heart_bar.py`）+ 队列选中环 + 空态爱心（`PreviewLabel`）；
+  **橙** = 双视角胶囊 + 「打码编辑…」蜜橙描边（`variant="outlineEnergy"`）+ 空态关键词 + 处理中/警告；
+  **蓝** = 主操作、「选择图片…」在队列空时升为主按钮（`_sync_open_button`）；**暖白** = 画布。
+  自查：`check_usage.py --render py/_qa_shots/xiaodu_empty.png`（或任一主正常态截图）。
+- **`py/ui/theme.py` 的三块**：① 度量令牌 `SPACE/RADIUS/TYPE`（与套件 `metric_qt` 同值，
+  另有站点级 `display=20`）；② `_SITE_QSS` 站点层——按钮 32px 高/13px 字、三档变体
+  （`primary` / 默认=次按钮 / `ghost` / `quietDanger`）、命名标签（`appTitle`、`previewHint`、
+  `statusLine`、`duoChip`、`cardName`、`sectionTitle`、`hint`、`warnBox`、`coverPreview`）、
+  预览框（`QFrame#previewBox` + `empty`/`dragging` 属性）、队列卡（`QFrame#queueCard` + `state`）、
+  状态胶囊（`pillPending/Running/Done/Failed`）；③ `apply_theme/current_palette/set_variant`。
+  队列卡的两种状态是 `state="selected"`（心粉环）/ `"current"`（天蓝环 + 浅蓝底）——别再合并成一个 `sel`。
+- **两条死规矩**：
+  1. **不要用无选择器的 `setStyleSheet`**——Qt 会把规则级联给该控件**所有子控件**。旧版
+     选中队列卡时这么干，结果卡片里每个 QLabel 都套上 2px 蓝框（四层同心蓝框）。
+     要换状态就改动态属性（`setProperty("state","selected")`）+ unpolish/polish。
+  2. **不要用 `setFixedHeight` 硬顶按钮高度**——主题 QSS 的 `min-height` 会覆盖它；
+     尺寸统一写进站点层，个别控件用只含度量的控件级样式表。
+- **验收门 `py/qa_render.py`**（新增）：`C:\Users\qu\miniconda3\python.exe qa_render.py`
+  → 两套皮肤各 9 张图落 `py/_qa_shots/`（不入库），并跑 36 条断言（含**四色齐**像素门禁：空态与批量进行中四色齐、单图态 ≥3 色）：按钮统一 32/13、
+  队列按钮封顶 200、选中靠属性、预览空态标记、**打码对话框可用 brush_size/brush_type 构造**、
+  皮肤招牌色、小窗不越界、以及**伪装→还原逐像素一致**。改 UI 后必须先跑它全绿。
+- **打码对话框 bug（v1.23.0 修）**：`MainWindow._open_mosaic()` 一直传
+  `brush_size=` / `brush_type=`，而 `MosaicDialog.__init__` 没这两个参数 → 点「打码编辑…」
+  直接 TypeError、对话框永远打不开（打包版无控制台 = "点了没反应"）。现在参数接上，
+  笔刷记忆真的生效；`qa_render.py` 里有回归锁。
+- **离线渲染的坑**：`QT_QPA_PLATFORM=offscreen` 时 **windows11 样式画不出按钮底**
+  （日志 `OpenThemeData() failed for theme 0 (BUTTON)`，实测填充=边框=`#EFEFEF`）。
+  接 QSS 之前靠系统样式的地方，离屏图会显得"按钮只有文字"——那是假象，别当缺陷报；
+  接了 QSS 之后按钮由样式表绘制，离屏才可信。
+
 ## 交付物与发布规则(重要)
 - `png伪装工具.exe`(项目根):PyInstaller 打包,**每次改 py/ 源码后必须重新打包并更新**
 - `png伪装工具.html`(项目根):**每次改 core.js/template.html 后必须重新 build 并更新**
-- `png伪装工具-分享版.zip`:对外分享包 = exe + html + **apk** + 使用说明.txt(**2026-10-02 起不再含测试图片**,用户指定);**exe/html/apk 任何更新后必须同步重打**
+- `png伪装工具.zip`:对外分享包 = `png伪装工具/` 目录下的 exe + html + **apk** + 使用说明.txt(**2026-10-02 起不再含测试图片**,用户指定;注意实际文件名是 `png伪装工具.zip`,不是早期文档写的「分享版」);**exe/html/apk 任何更新后必须同步重打**
 - 打包命令:exe → `cd py && python -m PyInstaller PngDisguiseTool.spec --noconfirm`(spec 含版本元数据与 Qt 翻译);html → `cd html && python build.py`
 - exe 内部名必须 ASCII(PngDisguiseTool),拷贝成中文名用 Python(勿用 bash cp,会乱码)
 - **GitHub 更新规则(用户硬性要求):禁止主动 push/更新 GitHub(含代码/Release/资产)。只有用户明确说了才执行;可以提示用户"有更新可推送",但绝不自作主张**
+
+
+
