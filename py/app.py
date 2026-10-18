@@ -11,11 +11,14 @@ from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from ui.main_window import MainWindow  # noqa: E402
+from ui.theme import apply_theme, load_theme  # noqa: E402
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("png伪装工具")
+    # 小独爱心 / 小独夜（设置里可切，记忆在 QSettings 的 theme 键）
+    apply_theme(app, load_theme())
     # Qt 内置对话框(QColorDialog 等)中文化
     translator = QTranslator(app)
     tr_path = QLibraryInfo.path(QLibraryInfo.TranslationsPath)
