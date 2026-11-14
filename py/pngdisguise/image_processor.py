@@ -37,7 +37,7 @@ def user_data_dir() -> str:
     return d
 
 COVER_BG = (0x25, 0x63, 0xEB)  # #2563EB
-MAX_FRAME_PIXELS = 8_000_000
+MAX_FRAME_PIXELS = 12_500_000
 MAX_TOTAL_PIXELS = 300_000_000
 MAX_INPUT_BYTES = 100 * 1024 * 1024
 
@@ -412,7 +412,7 @@ def _validate(w: int, h: int, frames: int):
     if w <= 0 or h <= 0 or frames <= 0:
         raise ImageError("图片尺寸或帧数无效")
     if w * h > MAX_FRAME_PIXELS:
-        raise ImageError("图片尺寸过大;单帧最多约 800 万像素")
+        raise ImageError(f"图片尺寸过大;单帧最多约 {MAX_FRAME_PIXELS // 10_000} 万像素")
     if w * h * frames > MAX_TOTAL_PIXELS:
         raise ImageError("图片总像素量过大")
 
